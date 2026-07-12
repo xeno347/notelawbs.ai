@@ -1,0 +1,53 @@
+# Match Android's newArchEnabled=false (android/gradle.properties) so both platforms build old-architecture.
+ENV['RCT_NEW_ARCH_ENABLED'] = '0'
+
+# Resolve react_native_pods.rb with node to allow for hoisting
+require Pod::Executable.execute_command('node', ['-p',
+  'require.resolve(
+    "react-native/scripts/react_native_pods.rb",
+    {paths: [process.argv[1]]},
+  )', __dir__]).strip
+
+# @react-native-ml-kit/text-recognition (GoogleMLKit/TextRecognition 8.0.0) requires iOS 15.5+
+platform :ios, '15.5'
+prepare_react_native_project!
+
+linkage = ENV['USE_FRAMEWORKS']
+if linkage != nil
+  Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
+  use_frameworks! :linkage => linkage.to_sym
+end
+
+target 'LitNotesCanvas' do
+  config = use_native_modules!
+
+  use_react_native!(
+    :path => config[:reactNativePath],
+    # An absolute path to your application root.
+    :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  target 'LitNotesCanvasTests' do
+    inherit! :complete
+    # Pods for testing
+  end
+
+  post_install do |installer|
+    # https://github.com/facebook/react-native/blob/main/packages/react-native/scripts/react_native_pods.rb#L197-L202
+    react_native_post_install(
+      installer,
+      config[:reactNativePath],
+      :mac_catalyst_enabled => false,
+      # :ccache_enabled => true
+    )
+
+    # NOTE: GoogleMLKit's MLImage/MLKitVision .framework binaries have arm64 +
+    # x86_64 slices, but the arm64 slice is device-only ("built for iOS", not
+    # "iOS-simulator") — confirmed via a failed link ("but linking in object
+    # file ... built for 'iOS'") after trying to clear CocoaPods' default
+    # EXCLUDED_ARCHS[sdk=iphonesimulator*]=arm64 here. That default is correct,
+    # not stale — leave it alone. Simulator builds/runs must target x86_64
+    # (Rosetta on Apple Silicon); real device builds are natively arm64 and
+    # unaffected. See project-litnotes-prd memory / plan notes.
+  end
+end
