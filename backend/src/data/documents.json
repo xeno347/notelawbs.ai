@@ -1,0 +1,36 @@
+[
+  {
+    "id": "demo-doc-001",
+    "filePath": "/demo/sharma-v-state.pdf",
+    "title": "Sharma v. State of Rajasthan.pdf",
+    "pageCount": 12,
+    "fileSizeBytes": 3072000,
+    "lastOpened": "2026-06-27T01:40:31.511Z",
+    "type": "pdf",
+    "ocrStatus": "complete",
+    "ocrConfidence": 0.98,
+    "detectedLanguage": "english",
+    "tags": [
+      "demo",
+      "petition"
+    ],
+    "indexStatus": "complete"
+  },
+  {
+    "id": "demo-doc-002",
+    "filePath": "/demo/counter-affidavit.pdf",
+    "title": "Counter Affidavit.pdf",
+    "pageCount": 8,
+    "fileSizeBytes": 1843200,
+    "lastOpened": "2026-06-27T01:40:31.511Z",
+    "type": "pdf",
+    "ocrStatus": "processing",
+    "ocrConfidence": 0.71,
+    "detectedLanguage": "english",
+    "tags": [
+      "demo",
+      "affidavit"
+    ],
+    "indexStatus": "processing"
+  }
+]

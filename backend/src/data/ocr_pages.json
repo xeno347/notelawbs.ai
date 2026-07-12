@@ -1,0 +1,9 @@
+[
+  {
+    "id": "ocr_demo_001",
+    "documentId": "demo-doc-001",
+    "pageIndex": 0,
+    "content": "{\"pageIndex\":0,\"pageWidth\":595,\"pageHeight\":842,\"blocks\":[{\"text\":\"SUPREME COURT OF INDIA\",\"left\":50,\"top\":40,\"width\":300,\"height\":24,\"confidence\":0.99},{\"text\":\"INDEX\",\"left\":50,\"top\":90,\"width\":120,\"height\":20,\"confidence\":0.96}]}",
+    "isTranslation": false
+  }
+]

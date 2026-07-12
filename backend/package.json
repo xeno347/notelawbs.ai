@@ -1,0 +1,11 @@
+{
+  "name": "notelawbs-backend",
+  "private": true,
+  "version": "0.0.1",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "create-user": "node src/create-user.js"
+  }
+}
