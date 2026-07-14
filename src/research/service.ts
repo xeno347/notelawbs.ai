@@ -4,82 +4,42 @@ import {
   retrieve,
   terms,
   type ResearchResult,
+  type MemoSection,
 } from './researchCore';
-import { getSetting, setSetting } from '../storage';
+import {
+  aiComplete,
+  getAiCredentials,
+  parseJsonFromAi,
+  saveKey as saveAnthropicKey,
+  clearKey as clearAnthropicKey,
+  getStoredKey as getAnyAiKey,
+  saveGroqKey,
+} from '../services/aiClient';
 
-const KEY_SETTING = 'anthropic_key';
-const MODEL_SETTING = 'anthropic_model';
-const DEFAULT_MODEL = 'claude-sonnet-4-6';
-const TIMEOUT_MS = 30000;
-
-export async function getStoredKey(): Promise<string | null> {
-  return getSetting(KEY_SETTING);
-}
-
-export async function saveKey(key: string): Promise<void> {
-  await setSetting(KEY_SETTING, key.trim());
-}
-
-export async function clearKey(): Promise<void> {
-  await setSetting(KEY_SETTING, '');
-}
+export { getAnyAiKey as getStoredKey, saveAnthropicKey as saveKey, clearAnthropicKey as clearKey, saveGroqKey };
 
 export function offline(query: string, notice = ''): ResearchResult {
   return offlineResearch(JUDGMENTS, query, notice);
 }
 
-async function anthropic(
-  apiKey: string,
-  model: string,
-  system: string,
-  user: string,
-  signal: AbortSignal,
-): Promise<string> {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    signal,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 4096,
-      system,
-      messages: [{ role: 'user', content: user }],
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`Anthropic ${res.status}`);
-  }
-  const data = await res.json();
-  return data?.content?.[0]?.text ?? '';
-}
-
+/** Legal research that answers the user's question directly when live AI is available. */
 export async function runResearch(query: string): Promise<ResearchResult> {
   const q = query.trim();
   if (!q) return offline(q);
 
-  const apiKey = await getStoredKey();
-  if (!apiKey) return offline(q);
-
-  const model = (await getSetting(MODEL_SETTING)) || DEFAULT_MODEL;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const creds = await getAiCredentials();
+  if (!creds) return offline(q);
 
   try {
     let searchTerms: string[];
     try {
-      const raw = await anthropic(
-        apiKey,
-        'Output valid JSON only.',
-        `You are a legal research assistant for Indian litigation. Given this query, output ONLY a JSON array of 5-8 lowercase search terms to find relevant Indian case law. No explanation.\n\nQuery: ${q}`,
-        model,
-        controller.signal,
+      const raw = await aiComplete(
+        'You are a legal research assistant for Indian litigation. Output valid JSON only.',
+        `Given this research question, output ONLY a JSON array of 5-8 lowercase search terms to find relevant Indian case law. No explanation.\n\nQuestion: ${q}`,
+        { maxTokens: 256, timeoutMs: 30000 },
       );
-      const m = raw.match(/\[[\s\S]*\]/);
-      searchTerms = m ? JSON.parse(m[0]) : terms(q);
+      const parsed = parseJsonFromAi(raw);
+      searchTerms = Array.isArray(parsed) ? (parsed as string[]) : terms(q);
     } catch {
       searchTerms = terms(q);
     }
@@ -94,17 +54,36 @@ export async function runResearch(query: string): Promise<ResearchResult> {
       )
       .join('\n\n');
 
-    const memoRaw = await anthropic(
-      apiKey,
-      'You are a senior Indian litigation counsel. Output valid JSON only.',
-      `Draft a legal research memo for Indian litigation.\n\nQuery: ${q}\n\nAuthorities:\n${authorityBlock}\n\nReturn JSON exactly:\n{"sections":[{"heading":"Summary","body":"...","citations":[]},{"heading":"Legal Framework","body":"...","citations":[]},{"heading":"Settled Position","body":"...","citations":[]},{"heading":"Adverse Authorities","body":"...","citations":[]},{"heading":"Conclusion","body":"...","citations":[]}]}\nUse only the authorities provided. Output valid JSON only.`,
-      model,
-      controller.signal,
+    const memoRaw = await aiComplete(
+      'You are a senior Indian litigation counsel. Answer the user accurately. Output valid JSON only.',
+      `Answer this legal research question for Indian law.
+
+Question: ${q}
+
+On-device authorities (use when relevant; you may also rely on settled Indian law):
+${authorityBlock || '(none matched — answer from settled Indian law and clearly note limited local authorities)'}
+
+Return JSON exactly:
+{
+  "sections": [
+    {"heading":"Direct Answer","body":"Clear 2-4 sentence answer to the question.","citations":[]},
+    {"heading":"Legal Framework","body":"...","citations":[]},
+    {"heading":"Key Authorities","body":"...","citations":[]},
+    {"heading":"Counterarguments","body":"...","citations":[]},
+    {"heading":"Practical Next Steps","body":"...","citations":[]}
+  ]
+}
+
+Rules:
+- The Direct Answer must address the question first — do not dodge with vague process talk.
+- Prefer specific holdings, statutes, and standards over filler.
+- If uncertain, say what is settled vs unsettled.
+- Output valid JSON only.`,
+      { maxTokens: 4096, timeoutMs: 45000 },
     );
 
-    const m = memoRaw.match(/\{[\s\S]*\}/);
-    const memo = m ? JSON.parse(m[0]) : null;
-    if (!memo?.sections) {
+    const memo = parseJsonFromAi(memoRaw) as { sections?: MemoSection[] };
+    if (!memo?.sections?.length) {
       return offline(q, 'Live AI draft failed; showing on-device memo.');
     }
 
@@ -118,37 +97,26 @@ export async function runResearch(query: string): Promise<ResearchResult> {
         court: j.court,
         year: j.year,
       })),
-      memo,
+      memo: { sections: memo.sections },
     };
   } catch {
     return offline(q, 'Live AI unreachable; showing on-device memo.');
-  } finally {
-    clearTimeout(timer);
   }
 }
 
 export async function verifyKey(key: string): Promise<boolean> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+  const trimmed = key.trim();
+  if (trimmed.length < 8) return false;
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': key.trim(),
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: DEFAULT_MODEL,
-        max_tokens: 10,
-        messages: [{ role: 'user', content: 'ping' }],
-      }),
-    });
-    return res.ok || res.status === 400;
+    // Persist temporarily so getAiCredentials / aiComplete can use it for the probe.
+    if (trimmed.startsWith('gsk_')) {
+      await saveGroqKey(trimmed);
+    } else {
+      await saveAnthropicKey(trimmed);
+    }
+    await aiComplete('Reply with the single word ok.', 'ping', { maxTokens: 8, timeoutMs: 10000 });
+    return true;
   } catch {
     return false;
-  } finally {
-    clearTimeout(timer);
   }
 }

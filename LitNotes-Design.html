@@ -109,14 +109,14 @@
 
   <section class="callout success">
     <div class="t">Where it stands</div>
-    <p>The full research app is built and runs 100% offline today. Cloud sign-in (Supabase + Google) and live workspace sharing are implemented end-to-end, type-check clean, and switch on the moment you add Supabase keys — no code changes. They have not yet been run on a device, so a short dry-run is the main thing between here and the demo.</p>
+    <p>The full research app is built and runs 100% offline today. Cloud sign-in (Supabase email + Google + Apple), live workspace sharing, real iOS permission prompts, and session lock on background are implemented end-to-end. Paste Supabase keys and rebuild native once — a short dry-run is the main thing between here and the demo.</p>
   </section>
 
   <section>
     <h2>Status at a glance</h2>
     <div class="stats">
-      <div class="stat"><div class="v success">14</div><div class="l">Shipping (offline)</div></div>
-      <div class="stat"><div class="v warning">5</div><div class="l">Coded · needs keys/device</div></div>
+      <div class="stat"><div class="v success">17</div><div class="l">Shipping (offline + lock/perms)</div></div>
+      <div class="stat"><div class="v warning">2</div><div class="l">Coded · needs keys/device</div></div>
       <div class="stat"><div class="v info">6</div><div class="l">Pending / not built</div></div>
       <div class="stat"><div class="v success">0</div><div class="l">TypeScript errors</div></div>
     </div>
@@ -142,6 +142,9 @@
         <tr class="success"><td>Settings — 8 sections incl. Reading &amp; Collaboration</td><td>Settings</td><td class="strong">Solid</td></tr>
         <tr class="success"><td>Per-user workspace isolation (no cross-account leak)</td><td>Data</td><td class="strong">Solid</td></tr>
         <tr class="success"><td>Auto-OCR toggle + persisted permission state</td><td>Settings</td><td class="strong">Solid</td></tr>
+        <tr class="success"><td>iOS + Android permission prompts (notifications, photos)</td><td>Shell</td><td class="strong">Solid</td></tr>
+        <tr class="success"><td>Session lock on background (privacy cover + Settings toggle)</td><td>Security</td><td class="strong">Solid</td></tr>
+        <tr class="success"><td>Apple sign-in (iOS → Supabase id token)</td><td>Auth</td><td class="strong">Good</td></tr>
       </tbody>
     </table>
   </section>
@@ -152,11 +155,8 @@
     <table>
       <thead><tr><th>Capability</th><th>State</th><th>What it needs</th></tr></thead>
       <tbody>
-        <tr class="warning"><td>Cloud auth — Supabase email + Google sign-in</td><td class="strong">Coded, untested</td><td>Supabase keys + one native rebuild</td></tr>
+        <tr class="warning"><td>Cloud auth — Supabase email + Google + Apple</td><td class="strong">Coded, untested</td><td>Supabase keys (+ Apple/Google OAuth) + one native rebuild</td></tr>
         <tr class="warning"><td>Live sharing — presence, cursors, snapshot sync, roles</td><td class="strong">Coded, untested</td><td>Supabase keys; on-device dry-run</td></tr>
-        <tr class="warning"><td>iOS permission prompts</td><td class="strong">Partial</td><td>Android real; iOS auto-granted (no native module)</td></tr>
-        <tr class="warning"><td>Apple sign-in</td><td class="strong">Stub</td><td>Placeholder button only</td></tr>
-        <tr class="warning"><td>Session lock on background</td><td class="strong">Design only</td><td>State modelled, not yet wired</td></tr>
       </tbody>
     </table>
   </section>
@@ -375,7 +375,7 @@
 
   <section>
     <h2>11 · Session state machine</h2>
-    <p class="lead">Dashed transitions are error / return / logout edges. "Backgrounded / locked" is modelled but not yet wired in code.</p>
+    <p class="lead">Dashed transitions are error / return / logout edges. "Backgrounded / locked" is wired via AppState + SessionLockScreen (Settings → Account to disable).</p>
     <div class="flow">
       <span class="chip term">Launching</span><span class="arw">→</span>
       <span class="chip">Unauthenticated</span><span class="arw">→</span>

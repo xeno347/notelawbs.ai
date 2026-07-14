@@ -28,7 +28,7 @@ export default function CollabCursors({ scale }: { scale: number }) {
               left: peer.x,
               top: peer.y,
               transform: [{ scale: inv }],
-              transformOrigin: '0 0' as any,
+              // Keep cursor tip pinned without Reanimated transformOrigin.
             }}>
             <MousePointer2 size={20} color={peer.color} fill={peer.color} strokeWidth={1.4} />
             <View style={[styles.tag, { backgroundColor: peer.color }]}>

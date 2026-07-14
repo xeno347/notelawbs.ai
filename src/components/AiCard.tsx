@@ -8,19 +8,18 @@ export const AI_CARD_WIDTH = 288;
 
 function AiCard({
   node,
-  scale,
   connectSource,
   onConnectStart,
   onConnectTo,
 }: {
   node: FlowNode;
-  scale: number;
   connectSource: string | null;
   onConnectStart: (id: string) => void;
   onConnectTo: (id: string) => void;
 }) {
   const p = useTheme();
   const moveNode = useStore((s) => s.moveNode);
+  const bringNodeToFront = useStore((s) => s.bringNodeToFront);
   const removeNode = useStore((s) => s.removeNode);
   const setHoverNodeId = useStore((s) => s.setHoverNodeId);
   const data = node.data as AiData;
@@ -28,29 +27,44 @@ function AiCard({
   const isSource = connectSource === node.id;
   const connecting = !!connectSource;
   const isFocused = useStore((s) => s.hoverNodeId === node.id);
+  const width = node.w || AI_CARD_WIDTH;
 
   const pan = useMemo(
     () =>
       PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: (_e, g) =>
-          Math.abs(g.dx) > 4 || Math.abs(g.dy) > 4,
+          g.numberActiveTouches === 1 && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
+        onMoveShouldSetPanResponderCapture: (_e, g) =>
+          g.numberActiveTouches === 1 && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
+        onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: () => {
-          origin.current = { x: node.x, y: node.y };
+          const n = useStore.getState().nodes.find((x) => x.id === node.id);
+          origin.current = { x: n?.x ?? node.x, y: n?.y ?? node.y };
+          bringNodeToFront(node.id);
           setHoverNodeId(node.id);
         },
         onPanResponderMove: (_e, g) => {
-          moveNode(node.id, origin.current.x + g.dx / scale, origin.current.y + g.dy / scale);
+          const s = Math.max(0.05, useStore.getState().canvasTf.s);
+          moveNode(node.id, origin.current.x + g.dx / s, origin.current.y + g.dy / s);
         },
         onPanResponderRelease: () => setHoverNodeId(null),
+        onPanResponderTerminate: () => setHoverNodeId(null),
       }),
-    [node.id, node.x, node.y, scale, moveNode, setHoverNodeId],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [node.id, moveNode, bringNodeToFront, setHoverNodeId],
   );
 
   const s = styles(p);
 
   return (
     <View
-      style={[s.card, { left: node.x, top: node.y }, isSource && s.cardSource, isFocused && s.cardFocus]}
+      style={[
+        s.card,
+        { left: node.x, top: node.y, width, zIndex: node.z || 1 },
+        isSource && s.cardSource,
+        isFocused && s.cardFocus,
+      ]}
       {...pan.panHandlers}>
       <View style={s.topRule} />
       <View style={s.inner}>
@@ -103,7 +117,6 @@ const styles = (p: ReturnType<typeof getPalette>) =>
   StyleSheet.create({
     card: {
       position: 'absolute',
-      width: AI_CARD_WIDTH,
       backgroundColor: p.surface,
       borderWidth: 1,
       borderColor: p.border,

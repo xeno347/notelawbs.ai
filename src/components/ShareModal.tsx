@@ -34,6 +34,7 @@ export default function ShareModal({ onClose }: { onClose: () => void }) {
 
   const [joinCode, setJoinCode] = useState('');
   const [pickAccess, setPickAccess] = useState<CollabAccess>('edit');
+  const [joinAccess, setJoinAccess] = useState<CollabAccess>('edit');
 
   const configured = isSupabaseConfigured();
   const live = status === 'live';
@@ -144,7 +145,7 @@ export default function ShareModal({ onClose }: { onClose: () => void }) {
               </Text>
 
               <View style={{ gap: 8 }}>
-                <Text style={[styles.sectionLabel, { color: p.textMuted }]}>PEOPLE CAN</Text>
+                <Text style={[styles.sectionLabel, { color: p.textMuted }]}>WHEN I START, PEOPLE CAN</Text>
                 <Segmented
                   options={[
                     { key: 'edit', label: 'Edit with me' },
@@ -176,10 +177,21 @@ export default function ShareModal({ onClose }: { onClose: () => void }) {
                 placeholder="e.g. K7P2QX"
                 autoCapitalize="characters"
               />
+              <View style={{ gap: 8 }}>
+                <Text style={[styles.sectionLabel, { color: p.textMuted }]}>JOIN AS</Text>
+                <Segmented
+                  options={[
+                    { key: 'edit', label: 'Editor' },
+                    { key: 'view', label: 'Viewer' },
+                  ]}
+                  value={joinAccess}
+                  onChange={(k) => setJoinAccess(k as CollabAccess)}
+                />
+              </View>
               <AppButton
                 label="Join session"
                 variant="secondary"
-                onPress={() => joinCode.trim() && join(joinCode.trim(), 'edit')}
+                onPress={() => joinCode.trim() && join(joinCode.trim(), joinAccess)}
                 leading={<LogIn size={17} color={p.text} />}
                 full
               />

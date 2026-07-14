@@ -1,4 +1,6 @@
+import { Platform } from 'react-native';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
+import { appleAuth } from '@invertase/react-native-apple-authentication';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { getSupabase, googleClientIds, isGoogleConfigured } from '../services/supabase';
 import type { AuthUser } from '../storage';
@@ -83,7 +85,11 @@ export async function cloudSignInWithGoogle(): Promise<CloudResult> {
   const sb = getSupabase();
   if (!sb) return { ok: false, error: 'Cloud sign-in is not configured.' };
   if (!isGoogleConfigured()) {
-    return { ok: false, error: 'Add a Google client ID in supabaseConfig.ts to enable Google sign-in.' };
+    return {
+      ok: false,
+      error:
+        'Add GOOGLE_WEB_CLIENT_ID (and GOOGLE_IOS_CLIENT_ID on iOS) in src/services/supabaseConfig.local.ts, then rebuild the app.',
+    };
   }
   try {
     ensureGoogleConfigured();
@@ -97,6 +103,59 @@ export async function cloudSignInWithGoogle(): Promise<CloudResult> {
   } catch (e: any) {
     const msg = e?.message || 'Google sign-in was cancelled.';
     return { ok: false, error: msg };
+  }
+}
+
+export function isAppleSignInAvailable(): boolean {
+  if (Platform.OS === 'ios') return appleAuth.isSupported;
+  // Android needs Apple Services ID + web flow; treat as unavailable unless explicitly supported.
+  try {
+    return !!(appleAuth as any).isSupported;
+  } catch {
+    return false;
+  }
+}
+
+export async function cloudSignInWithApple(): Promise<CloudResult> {
+  const sb = getSupabase();
+  if (!sb) return { ok: false, error: 'Cloud sign-in is not configured.' };
+  if (Platform.OS !== 'ios') {
+    return { ok: false, error: 'Sign in with Apple is available on iOS in this build.' };
+  }
+  if (!appleAuth.isSupported) {
+    return { ok: false, error: 'Sign in with Apple is not supported on this device.' };
+  }
+  try {
+    const response = await appleAuth.performRequest({
+      requestedOperation: appleAuth.Operation.LOGIN,
+      requestedScopes: [appleAuth.Scope.FULL_NAME, appleAuth.Scope.EMAIL],
+    });
+    if (!response.identityToken) {
+      return { ok: false, error: 'Apple did not return an identity token.' };
+    }
+    const { data, error } = await sb.auth.signInWithIdToken({
+      provider: 'apple',
+      token: response.identityToken,
+      nonce: response.nonce,
+    });
+    if (error || !data.user) {
+      return { ok: false, error: error?.message || 'Apple sign-in failed.' };
+    }
+    // Apple only sends the full name on the first successful sign-in — stash it in metadata when present.
+    const given = response.fullName?.givenName;
+    const family = response.fullName?.familyName;
+    const fullName = [given, family].filter(Boolean).join(' ').trim();
+    if (fullName) {
+      await sb.auth.updateUser({ data: { full_name: fullName } }).catch(() => {});
+      const refreshed = await getCloudUser();
+      if (refreshed) return { ok: true, user: { ...refreshed, displayName: fullName } };
+    }
+    return { ok: true, user: mapCloudUser(data.user) };
+  } catch (e: any) {
+    if (e?.code === appleAuth.Error.CANCELED) {
+      return { ok: false, error: 'Apple sign-in was cancelled.' };
+    }
+    return { ok: false, error: e?.message || 'Apple sign-in failed.' };
   }
 }
 

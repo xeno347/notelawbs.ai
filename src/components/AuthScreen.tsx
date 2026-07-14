@@ -13,6 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Apple, Chrome } from 'lucide-react-native';
 import { useTheme, SERIF, RADIUS, ELEVATION } from '../theme';
 import { useAuth } from '../auth/authStore';
+import { isAppleSignInAvailable } from '../auth/cloudAuth';
 import { isSupabaseConfigured } from '../services/supabase';
 import { AppButton, Field, Segmented, Aurora, BrandMark } from './ui';
 
@@ -33,9 +34,11 @@ export default function AuthScreen() {
   const login = useAuth((s) => s.login);
   const register = useAuth((s) => s.register);
   const loginWithGoogle = useAuth((s) => s.loginWithGoogle);
+  const loginWithApple = useAuth((s) => s.loginWithApple);
   const clearError = useAuth((s) => s.clearError);
 
   const cloud = isSupabaseConfigured();
+  const appleAvailable = isAppleSignInAvailable();
 
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
   const [name, setName] = useState('');
@@ -93,9 +96,16 @@ export default function AuthScreen() {
 
   const formCard = (
     <View style={[styles.card, { backgroundColor: p.surface, borderColor: p.border }, ELEVATION.panel]}>
-      <Text style={[styles.cardTitle, { color: p.text }]}>
-        {mode === 'signin' ? 'Welcome back' : 'Create your account'}
-      </Text>
+      <View style={styles.titleRow}>
+        <Text style={[styles.cardTitle, { color: p.text }]}>
+          {mode === 'signin' ? 'Welcome back' : 'Create your account'}
+        </Text>
+        {cloud && (
+          <View style={[styles.cloudBadge, { backgroundColor: p.successSoft, borderColor: p.success }]}>
+            <Text style={[styles.cloudBadgeText, { color: p.success }]}>Cloud</Text>
+          </View>
+        )}
+      </View>
       <Text style={[styles.cardSub, { color: p.textMuted }]}>
         {mode === 'signin'
           ? 'Sign in to open your workspace.'
@@ -170,7 +180,23 @@ export default function AuthScreen() {
           <AppButton
             label="Apple"
             variant="secondary"
-            onPress={() => setLocalError('Social sign-in is not enabled in this build yet.')}
+            onPress={() => {
+              setLocalError(null);
+              clearError();
+              if (!cloud) {
+                setLocalError('Connect Supabase in Settings to enable Apple sign-in.');
+                return;
+              }
+              if (!appleAvailable) {
+                setLocalError(
+                  Platform.OS === 'ios'
+                    ? 'Sign in with Apple is not supported on this device.'
+                    : 'Sign in with Apple is available on iOS in this build.',
+                );
+                return;
+              }
+              loginWithApple();
+            }}
             leading={<Apple size={17} color={p.text} />}
             full
           />
@@ -264,7 +290,15 @@ const styles = StyleSheet.create({
   propText: { flex: 1, fontSize: 14.5, lineHeight: 21 },
 
   card: { borderRadius: RADIUS.xl, borderWidth: 1, padding: 28 },
-  cardTitle: { fontSize: 23, fontWeight: '800', letterSpacing: 0.1 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  cardTitle: { fontSize: 23, fontWeight: '800', letterSpacing: 0.1, flex: 1 },
+  cloudBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: RADIUS.pill,
+    borderWidth: 1,
+  },
+  cloudBadgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.6 },
   cardSub: { fontSize: 14, marginTop: 6 },
 
   errorBox: { marginTop: 16, borderRadius: RADIUS.md, borderWidth: 1, padding: 12 },

@@ -8,23 +8,23 @@ import { AppButton, Aurora, BrandMark } from './ui';
 const STEPS = [
   {
     icon: BookOpen,
-    title: 'Read & highlight',
-    body: 'Open a judgment PDF and draw category-coded highlights over the passages that matter.',
+    title: 'Import & read',
+    body: 'Create a project, add research PDFs in the sidebar, and read them in the document pane.',
   },
   {
     icon: PenTool,
-    title: 'Build on the canvas',
-    body: 'Every highlight becomes a card on an infinite canvas you can arrange, annotate and sketch on.',
+    title: 'Highlight & extract',
+    body: 'Mark key claims, then send live-linked excerpts to the infinite workspace.',
   },
   {
     icon: Link2,
-    title: 'Connect the argument',
-    body: 'Thread facts, ratios and authorities together, then link handwritten notes back to the page.',
+    title: 'Synthesize',
+    body: 'Arrange excerpts, type notes, draw connections, and group ideas into outline sections.',
   },
   {
     icon: Sparkles,
-    title: 'Research & export',
-    body: 'Draft memos with AI, build a court-ready index, and export the whole bundle — all on-device.',
+    title: 'Export & share',
+    body: 'Jump back to source with one tap, then export your outline or sync a live session.',
   },
 ];
 
@@ -48,7 +48,8 @@ export default function OnboardingScreen({ onDone }: { onDone: () => void }) {
             <BrandMark size={52} />
             <Text style={[styles.title, { color: p.text }]}>Welcome to LitNotes Canvas</Text>
             <Text style={[styles.sub, { color: p.textMid }]}>
-              Your research desk for court judgments — highlight, connect and reason in one place.
+              A LiquidText-style research desk — pull ideas out of documents into a linked
+              workspace, then outline and export.
             </Text>
           </View>
 

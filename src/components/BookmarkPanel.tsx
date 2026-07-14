@@ -1,12 +1,21 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, Modal } from 'react-native';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  Modal,
+  Alert,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from '@react-native-community/blur';
+import DraggableFlatList, { type RenderItemParams, ScaleDecorator } from 'react-native-draggable-flatlist';
 import { useStore, type Bookmark, type BookmarkSectionKey } from '../store';
 import { getPalette, useTheme, SERIF, RADIUS, ELEVATION } from '../theme';
 
 const SECTIONS: Array<{ key: BookmarkSectionKey; label: string; hint: string; showDate?: boolean }> = [
-  { key: 'index', label: 'Index', hint: 'Table of contents for this bundle — section, page.' },
+  { key: 'index', label: 'Index', hint: 'Table of contents — nest sub-entries under a parent.', showDate: false },
   { key: 'dates', label: 'List of Dates', hint: 'Chronological events with their dates.', showDate: true },
   { key: 'synopsis', label: 'Synopsis', hint: 'Running narrative summary of the matter.' },
   { key: 'issues', label: 'Issue-wise', hint: 'Issues framed for adjudication, one per entry.' },
@@ -22,10 +31,12 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
   const addBookmark = useStore((s) => s.addBookmark);
   const updateBookmark = useStore((s) => s.updateBookmark);
   const removeBookmark = useStore((s) => s.removeBookmark);
+  const reorderBookmarks = useStore((s) => s.reorderBookmarks);
   const jumpToPage = useStore((s) => s.jumpToPage);
 
   const [active, setActive] = useState<BookmarkSectionKey>('index');
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [parentId, setParentId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [note, setNote] = useState('');
   const [page, setPage] = useState('');
@@ -36,9 +47,11 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
     () => bookmarks.filter((b) => b.section === active).sort((a, b) => a.order - b.order),
     [bookmarks, active],
   );
+  const roots = useMemo(() => flattenTree(entries), [entries]);
 
   const resetForm = () => {
     setEditingId(null);
+    setParentId(null);
     setTitle('');
     setNote('');
     setPage('');
@@ -47,6 +60,7 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
 
   const startEdit = (b: Bookmark) => {
     setEditingId(b.id);
+    setParentId(b.parentId || null);
     setTitle(b.title);
     setNote(b.note);
     setPage(b.page ? String(b.page) : '');
@@ -56,7 +70,13 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
   const submit = () => {
     if (!title.trim() && !note.trim()) return;
     const pageNum = page.trim() ? Math.max(1, parseInt(page, 10) || 0) || null : null;
-    const payload = { title: title.trim(), note: note.trim(), page: pageNum, date: date.trim() };
+    const payload = {
+      title: title.trim(),
+      note: note.trim(),
+      page: pageNum,
+      date: date.trim(),
+      parentId: parentId || null,
+    };
     if (editingId) {
       updateBookmark(editingId, payload);
     } else {
@@ -68,6 +88,57 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
   const useCurrentPage = () => setPage(String(currentPage));
 
   const s = styles(p);
+
+  const renderItem = ({ item, drag, isActive }: RenderItemParams<Bookmark & { depth: number }>) => (
+    <ScaleDecorator>
+      <TouchableOpacity
+        style={[s.row, isActive && s.rowDragging, item.depth > 0 && { marginLeft: 18 * item.depth }]}
+        onPress={() => startEdit(item)}
+        onLongPress={drag}
+        delayLongPress={180}>
+        <View style={s.rowMain}>
+          {meta.showDate && !!item.date && <Text style={s.rowDate}>{item.date}</Text>}
+          {!!item.title && (
+            <Text style={s.rowTitle}>
+              {item.depth > 0 ? '↳ ' : ''}
+              {item.title}
+            </Text>
+          )}
+          {!!item.note && (
+            <Text style={s.rowNote} numberOfLines={4}>
+              {item.note}
+            </Text>
+          )}
+        </View>
+        <View style={s.rowActions}>
+          <TouchableOpacity
+            style={s.nestBtn}
+            onPress={() => {
+              setParentId(item.id);
+              setEditingId(null);
+              setTitle('');
+              setNote('');
+              Alert.alert('Nest entry', `New entry will be nested under “${item.title || 'Untitled'}”.`);
+            }}>
+            <Text style={s.nestText}>Nest</Text>
+          </TouchableOpacity>
+          {item.page != null && (
+            <TouchableOpacity style={s.pagePill} onPress={() => jumpToPage(item.page!)}>
+              <Text style={s.pagePillText}>p. {item.page}</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            onPress={() => {
+              removeBookmark(item.id);
+              if (editingId === item.id) resetForm();
+            }}>
+            <Text style={s.rowDelete}>×</Text>
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </ScaleDecorator>
+  );
 
   return (
     <Modal animationType="slide" transparent onRequestClose={onClose}>
@@ -83,7 +154,7 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
             </TouchableOpacity>
           </View>
 
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabs} contentContainerStyle={s.tabsContent}>
+          <View style={s.tabs}>
             {SECTIONS.map((sec) => {
               const isActive = sec.key === active;
               const count = bookmarks.filter((b) => b.section === sec.key).length;
@@ -102,45 +173,35 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
                 </TouchableOpacity>
               );
             })}
-          </ScrollView>
+          </View>
 
-          <Text style={s.sectionHint}>{meta.hint}</Text>
+          <Text style={s.sectionHint}>
+            {meta.hint}
+            {parentId ? ' · Nesting under selected parent.' : ' · Long-press to reorder.'}
+          </Text>
 
-          <ScrollView style={s.list} keyboardShouldPersistTaps="handled">
-            {!docName && entries.length === 0 && (
-              <Text style={s.empty}>Open a PDF, then build this document's index here.</Text>
-            )}
-            {entries.map((b) => (
-              <TouchableOpacity key={b.id} style={s.row} onPress={() => startEdit(b)}>
-                <View style={s.rowMain}>
-                  {meta.showDate && !!b.date && <Text style={s.rowDate}>{b.date}</Text>}
-                  {!!b.title && <Text style={s.rowTitle}>{b.title}</Text>}
-                  {!!b.note && (
-                    <Text style={s.rowNote} numberOfLines={4}>
-                      {b.note}
-                    </Text>
-                  )}
-                </View>
-                <View style={s.rowActions}>
-                  {b.page != null && (
-                    <TouchableOpacity style={s.pagePill} onPress={() => jumpToPage(b.page!)}>
-                      <Text style={s.pagePillText}>p. {b.page}</Text>
-                    </TouchableOpacity>
-                  )}
-                  <TouchableOpacity
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    onPress={() => {
-                      removeBookmark(b.id);
-                      if (editingId === b.id) resetForm();
-                    }}>
-                    <Text style={s.rowDelete}>×</Text>
-                  </TouchableOpacity>
-                </View>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
+          <DraggableFlatList
+            data={roots}
+            keyExtractor={(item) => item.id}
+            onDragEnd={({ data }) => reorderBookmarks(active, data.map((d) => d.id))}
+            renderItem={renderItem}
+            contentContainerStyle={{ paddingBottom: 12 }}
+            ListEmptyComponent={
+              <Text style={s.empty}>
+                {!docName
+                  ? 'Open a PDF, then build this document’s index here.'
+                  : 'No entries yet — add one below.'}
+              </Text>
+            }
+            style={s.list}
+          />
 
           <View style={s.form}>
+            {parentId && (
+              <TouchableOpacity onPress={() => setParentId(null)}>
+                <Text style={s.nestHint}>Nesting on · tap to clear</Text>
+              </TouchableOpacity>
+            )}
             {meta.showDate && (
               <TextInput
                 style={s.input}
@@ -193,6 +254,30 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
+function flattenTree(entries: Bookmark[]): Array<Bookmark & { depth: number }> {
+  const byParent = new Map<string | null, Bookmark[]>();
+  for (const e of entries) {
+    const key = e.parentId || null;
+    const list = byParent.get(key) || [];
+    list.push(e);
+    byParent.set(key, list);
+  }
+  const out: Array<Bookmark & { depth: number }> = [];
+  const walk = (parent: string | null, depth: number) => {
+    const kids = (byParent.get(parent) || []).sort((a, b) => a.order - b.order);
+    for (const k of kids) {
+      out.push({ ...k, depth });
+      walk(k.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  // Orphans (parent missing) still show
+  for (const e of entries) {
+    if (!out.some((x) => x.id === e.id)) out.push({ ...e, depth: 0 });
+  }
+  return out;
+}
+
 const styles = (p: ReturnType<typeof getPalette>) =>
   StyleSheet.create({
     backdrop: { flex: 1, flexDirection: 'row', justifyContent: 'flex-end', backgroundColor: p.overlay },
@@ -202,56 +287,78 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       alignItems: 'center',
       justifyContent: 'space-between',
       paddingHorizontal: 18,
-      paddingBottom: 12,
+      paddingBottom: 10,
     },
-    title: { fontSize: 19, fontWeight: '700', color: p.text, fontFamily: SERIF },
-    closeBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: RADIUS.sm, borderWidth: 1, borderColor: p.border },
-    closeText: { color: p.text, fontSize: 13 },
-    tabs: { flexGrow: 0, borderBottomWidth: 1, borderBottomColor: p.border },
-    tabsContent: { paddingHorizontal: 14, paddingBottom: 10, gap: 6 },
-    tab: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: RADIUS.pill, marginRight: 4, backgroundColor: p.surfaceGlass, borderWidth: 1, borderColor: p.border },
-    tabActive: { backgroundColor: p.accent, borderColor: p.accent },
-    tabText: { fontSize: 12.5, fontWeight: '600', color: p.textMid },
-    tabTextActive: { color: '#fff' },
-    sectionHint: { fontSize: 11.5, color: p.textMuted, paddingHorizontal: 18, paddingVertical: 8, fontStyle: 'italic' },
+    title: { fontSize: 20, fontWeight: '800', color: p.text, fontFamily: SERIF },
+    closeBtn: { paddingHorizontal: 10, paddingVertical: 6 },
+    closeText: { color: p.tint, fontWeight: '700' },
+    tabs: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingHorizontal: 14, marginBottom: 6 },
+    tab: {
+      paddingHorizontal: 10,
+      paddingVertical: 7,
+      borderRadius: RADIUS.pill,
+      backgroundColor: p.surface2,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: p.border,
+    },
+    tabActive: { backgroundColor: p.tintSoft, borderColor: p.tint },
+    tabText: { fontSize: 12, color: p.textMid, fontWeight: '600' },
+    tabTextActive: { color: p.tint, fontWeight: '800' },
+    sectionHint: { fontSize: 12, color: p.textMuted, paddingHorizontal: 18, marginBottom: 8 },
     list: { flex: 1, paddingHorizontal: 14 },
-    empty: { color: p.textMuted, fontSize: 13, textAlign: 'center', padding: 24, lineHeight: 20 },
+    empty: { color: p.textMuted, fontSize: 13, padding: 16, textAlign: 'center' },
     row: {
       flexDirection: 'row',
-      backgroundColor: p.surfaceGlass,
-      borderRadius: RADIUS.md,
-      borderWidth: 1,
-      borderColor: p.border,
+      alignItems: 'flex-start',
+      gap: 8,
       padding: 12,
       marginBottom: 8,
-      gap: 8,
+      borderRadius: RADIUS.sm,
+      backgroundColor: p.surface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: p.border,
     },
-    rowMain: { flex: 1, minWidth: 0 },
-    rowDate: { fontSize: 11, fontWeight: '800', letterSpacing: 0.4, color: p.accent, marginBottom: 2 },
-    rowTitle: { fontSize: 14, fontWeight: '700', color: p.text, marginBottom: 2, fontFamily: SERIF },
-    rowNote: { fontSize: 12.5, lineHeight: 18, color: p.textMid, fontFamily: SERIF },
-    rowActions: { alignItems: 'flex-end', gap: 8, justifyContent: 'space-between' },
-    pagePill: { borderWidth: 1, borderColor: p.accent, borderRadius: RADIUS.pill, paddingHorizontal: 8, paddingVertical: 2 },
-    pagePillText: { fontSize: 10.5, color: p.accent, fontWeight: '700' },
-    rowDelete: { fontSize: 18, color: p.textMuted, lineHeight: 18 },
-    form: { borderTopWidth: 1, borderTopColor: p.border, padding: 14, gap: 8 },
+    rowDragging: { opacity: 0.92, borderColor: p.tint },
+    rowMain: { flex: 1 },
+    rowDate: { fontSize: 11, color: p.accent, fontWeight: '700', marginBottom: 2 },
+    rowTitle: { fontSize: 14, color: p.text, fontWeight: '700' },
+    rowNote: { fontSize: 12, color: p.textMid, marginTop: 4, lineHeight: 17 },
+    rowActions: { alignItems: 'flex-end', gap: 6 },
+    pagePill: {
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: RADIUS.pill,
+      backgroundColor: p.tintSoft,
+    },
+    pagePillText: { fontSize: 11, color: p.tint, fontWeight: '800' },
+    nestBtn: { paddingHorizontal: 8, paddingVertical: 3 },
+    nestText: { fontSize: 11, color: p.ai, fontWeight: '700' },
+    rowDelete: { fontSize: 22, color: p.danger, fontWeight: '300', lineHeight: 22 },
+    form: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: p.separator,
+      padding: 14,
+      gap: 8,
+      backgroundColor: p.grouped,
+    },
+    nestHint: { fontSize: 12, color: p.ai, fontWeight: '700', marginBottom: 4 },
     input: {
       borderWidth: 1,
-      borderColor: p.borderStrong,
+      borderColor: p.border,
       borderRadius: RADIUS.sm,
-      paddingHorizontal: 11,
-      paddingVertical: 9,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
       color: p.text,
-      backgroundColor: p.surfaceGlass,
-      fontSize: 13.5,
+      backgroundColor: p.surface,
+      fontSize: 14,
     },
-    inputMulti: { minHeight: 56, textAlignVertical: 'top' },
-    formRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-    pageInput: { width: 64 },
-    linkPageBtn: { paddingHorizontal: 10, paddingVertical: 9, borderRadius: RADIUS.sm, backgroundColor: p.surface2 },
-    linkPageText: { fontSize: 11.5, color: p.textMid, fontWeight: '600' },
-    cancelBtn: { paddingHorizontal: 10, paddingVertical: 9, borderRadius: RADIUS.sm },
-    cancelText: { color: p.textMuted, fontSize: 12.5 },
-    submitBtn: { flex: 1, backgroundColor: p.accent, borderRadius: RADIUS.sm, paddingVertical: 10, alignItems: 'center' },
-    submitText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+    inputMulti: { minHeight: 64, textAlignVertical: 'top' },
+    formRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
+    pageInput: { width: 72 },
+    linkPageBtn: { paddingHorizontal: 10, paddingVertical: 10, borderRadius: RADIUS.sm, backgroundColor: p.surface2 },
+    linkPageText: { fontSize: 12, color: p.text, fontWeight: '600' },
+    cancelBtn: { paddingHorizontal: 10, paddingVertical: 10 },
+    cancelText: { color: p.textMuted, fontWeight: '600' },
+    submitBtn: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: RADIUS.sm, backgroundColor: p.tint },
+    submitText: { color: '#fff', fontWeight: '800' },
   });

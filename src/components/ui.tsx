@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import {
   View,
   Text,
@@ -6,11 +6,127 @@ import {
   Pressable,
   ActivityIndicator,
   StyleSheet,
+  Platform,
   type TextInputProps,
   type ViewStyle,
 } from 'react-native';
-import Svg, { Defs, RadialGradient, Stop, Rect, Circle } from 'react-native-svg';
-import { useTheme, RADIUS, glow, type Palette } from '../theme';
+import { BlurView } from '@react-native-community/blur';
+import Svg, { Defs, RadialGradient, LinearGradient, Stop, Rect, Circle } from 'react-native-svg';
+import { useTheme, useScheme, RADIUS, TYPE, SANS, glow, ELEVATION, type Palette } from '../theme';
+
+/** Liquid Glass material — iOS chromeMaterial light/dark. */
+export function GlassView({
+  children,
+  style,
+  fallback,
+}: {
+  children?: React.ReactNode;
+  style?: ViewStyle;
+  fallback?: string;
+}) {
+  const p = useTheme();
+  const scheme = useScheme();
+  const blurType = scheme === 'dark' ? 'chromeMaterialDark' : 'chromeMaterialLight';
+  return (
+    <View style={[styles.glassWrap, style]}>
+      <BlurView
+        style={StyleSheet.absoluteFill}
+        blurType={blurType as any}
+        blurAmount={Platform.OS === 'ios' ? 28 : 18}
+        reducedTransparencyFallbackColor={fallback || p.surfaceGlass}
+      />
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: p.glassTint }]} pointerEvents="none" />
+      {children}
+    </View>
+  );
+}
+
+/** iOS Settings-style grouped inset section. */
+export function GroupedSection({
+  title,
+  footer,
+  children,
+  style,
+}: {
+  title?: string;
+  footer?: string;
+  children: React.ReactNode;
+  style?: ViewStyle;
+}) {
+  const p = useTheme();
+  return (
+    <View style={[{ marginBottom: 22 }, style]}>
+      {!!title && (
+        <Text style={[styles.groupTitle, { color: p.textMid }]}>{title.toUpperCase()}</Text>
+      )}
+      <View
+        style={[
+          styles.groupBox,
+          { backgroundColor: p.grouped },
+        ]}>
+        {children}
+      </View>
+      {!!footer && <Text style={[styles.groupFooter, { color: p.textMid }]}>{footer}</Text>}
+    </View>
+  );
+}
+
+export function GroupedRow({
+  children,
+  onPress,
+  last,
+}: {
+  children: React.ReactNode;
+  onPress?: () => void;
+  last?: boolean;
+}) {
+  const p = useTheme();
+  const inner = (
+    <View style={[styles.groupRow, !last && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: p.separator }]}>
+      {children}
+    </View>
+  );
+  if (onPress) {
+    return (
+      <Pressable onPress={onPress} style={({ pressed }) => [{ opacity: pressed ? 0.72 : 1 }]}>
+        {inner}
+      </Pressable>
+    );
+  }
+  return inner;
+}
+
+/* Vertical (or angled) linear gradient fill for premium surfaces. */
+export function SoftGradient({
+  from,
+  to,
+  angle = 'vertical',
+  radius = 0,
+  style,
+}: {
+  from: string;
+  to: string;
+  angle?: 'vertical' | 'diagonal';
+  radius?: number;
+  style?: ViewStyle;
+}) {
+  const x2 = angle === 'diagonal' ? '1' : '0';
+  // Unique id per instance — duplicate gradient ids spam RN SVG console errors.
+  const gid = `sg-${useId().replace(/:/g, '')}`;
+  return (
+    <View style={[StyleSheet.absoluteFill, { borderRadius: radius, overflow: 'hidden' }, style]} pointerEvents="none">
+      <Svg style={StyleSheet.absoluteFill}>
+        <Defs>
+          <LinearGradient id={gid} x1="0" y1="0" x2={x2} y2="1">
+            <Stop offset="0" stopColor={from} />
+            <Stop offset="1" stopColor={to} />
+          </LinearGradient>
+        </Defs>
+        <Rect x="0" y="0" width="100%" height="100%" fill={`url(#${gid})`} />
+      </Svg>
+    </View>
+  );
+}
 
 /* Primary / secondary / ghost action button with press feedback. */
 export function AppButton({
@@ -33,12 +149,12 @@ export function AppButton({
   tone?: string;
 }) {
   const p = useTheme();
-  const accent = tone || p.accent;
+  const accent = tone || p.tint;
   const isPrimary = variant === 'primary';
   const isGhost = variant === 'ghost';
-  const bg = isPrimary ? accent : isGhost ? 'transparent' : p.surface;
-  const border = isPrimary ? accent : isGhost ? 'transparent' : p.border;
-  const color = isPrimary ? '#fff' : isGhost ? p.textMid : p.text;
+  const bg = isPrimary ? accent : isGhost ? 'transparent' : p.fill;
+  const border = isPrimary ? accent : isGhost ? 'transparent' : 'transparent';
+  const color = isPrimary ? '#fff' : isGhost ? p.tint : p.text;
   const blocked = disabled || loading;
 
   return (
@@ -55,7 +171,7 @@ export function AppButton({
           opacity: blocked ? 0.55 : 1,
           transform: [{ scale: pressed && !blocked ? 0.98 : 1 }],
         },
-        isPrimary && glow(tone ? tone : p.accentGlow, 0.5),
+        isPrimary && glow(tone ? tone : p.tintSoft, 0.45),
       ]}>
       {loading ? (
         <ActivityIndicator color={color} size="small" />
@@ -102,10 +218,10 @@ export function Field({
         style={[
           styles.fieldWrap,
           {
-            backgroundColor: p.surface,
-            borderColor: focused ? p.accent : p.border,
+            backgroundColor: p.grouped,
+            borderColor: focused ? p.tint : p.separator,
           },
-          focused && glow(p.accentGlow, 0.35),
+          focused && glow(p.tintSoft, 0.35),
         ]}>
         <TextInput
           value={value}
@@ -141,7 +257,7 @@ export function Segmented<T extends string>({
 }) {
   const p = useTheme();
   return (
-    <View style={[styles.segTrack, { backgroundColor: p.surface2, borderColor: p.border }, style]}>
+    <View style={[styles.segTrack, { backgroundColor: p.fillSecondary }, style]}>
       {options.map((o) => {
         const active = o.key === value;
         return (
@@ -150,14 +266,14 @@ export function Segmented<T extends string>({
             onPress={() => onChange(o.key)}
             style={[
               styles.segItem,
-              active && { backgroundColor: p.surface, borderColor: p.border },
-              active && glow(p.accentGlow, 0.18),
+              active && { backgroundColor: p.grouped, ...ELEVATION.card },
             ]}>
             <Text
               style={{
                 fontSize: 13,
-                fontWeight: active ? '700' : '500',
-                color: active ? p.accent : p.textMuted,
+                fontWeight: active ? '600' : '400',
+                color: active ? p.text : p.textMid,
+                fontFamily: SANS,
               }}>
               {o.label}
             </Text>
@@ -170,7 +286,8 @@ export function Segmented<T extends string>({
 
 /* Soft multi-color aurora glow behind splash / auth / empty states. */
 export function Aurora({ palette }: { palette?: Palette }) {
-  const p = palette || useTheme();
+  const themePalette = useTheme();
+  const p = palette ?? themePalette;
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="none">
       <Svg style={StyleSheet.absoluteFill}>
@@ -211,40 +328,42 @@ export function BrandMark({ size = 40, color }: { size?: number; color?: string 
 }
 
 const styles = StyleSheet.create({
+  glassWrap: { overflow: 'hidden' },
+  groupTitle: { ...TYPE.caption2, fontWeight: '400', marginBottom: 7, marginLeft: 16, letterSpacing: -0.08 },
+  groupBox: { borderRadius: RADIUS.sm, overflow: 'hidden', ...ELEVATION.card },
+  groupFooter: { ...TYPE.caption2, marginTop: 7, marginHorizontal: 16, lineHeight: 16 },
+  groupRow: { minHeight: 44, paddingHorizontal: 16, paddingVertical: 11, flexDirection: 'row', alignItems: 'center' },
   btn: {
     minHeight: 50,
     paddingHorizontal: 20,
     borderRadius: RADIUS.md,
-    borderWidth: 1,
+    borderWidth: 0,
     alignItems: 'center',
     justifyContent: 'center',
   },
   btnInner: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  btnText: { fontSize: 15, fontWeight: '700' },
-  fieldLabel: { fontSize: 12.5, fontWeight: '600' },
+  btnText: { fontSize: 17, fontWeight: '600', fontFamily: SANS },
+  fieldLabel: { fontSize: 13, fontWeight: '400', fontFamily: SANS },
   fieldWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 48,
-    borderRadius: RADIUS.md,
-    borderWidth: 1,
-    paddingHorizontal: 14,
+    minHeight: 44,
+    borderRadius: RADIUS.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 16,
   },
-  fieldInput: { flex: 1, fontSize: 15, paddingVertical: 12 },
+  fieldInput: { flex: 1, fontSize: 17, paddingVertical: 10, fontFamily: SANS },
   segTrack: {
     flexDirection: 'row',
-    padding: 3,
-    borderRadius: RADIUS.pill,
-    borderWidth: 1,
-    gap: 3,
+    padding: 2,
+    borderRadius: RADIUS.sm,
+    gap: 2,
   },
   segItem: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 8,
-    borderRadius: RADIUS.pill,
-    borderWidth: 1,
-    borderColor: 'transparent',
+    paddingVertical: 7,
+    borderRadius: 8,
   },
 });

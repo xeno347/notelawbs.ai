@@ -14,6 +14,7 @@ import {
   cloudSignInWithEmail,
   cloudSignUpWithEmail,
   cloudSignInWithGoogle,
+  cloudSignInWithApple,
   cloudSignOut,
   getCloudUser,
   onCloudAuthChange,
@@ -35,6 +36,7 @@ type AuthStore = {
   register: (email: string, password: string, displayName: string) => Promise<boolean>;
   login: (email: string, password: string) => Promise<boolean>;
   loginWithGoogle: () => Promise<boolean>;
+  loginWithApple: () => Promise<boolean>;
   logout: () => Promise<void>;
   setPermissionsHandled: (v: boolean) => void;
   clearError: () => void;
@@ -144,6 +146,22 @@ export const useAuth = create<AuthStore>((set, get) => ({
       return false;
     }
     const res = await cloudSignInWithGoogle();
+    if (!res.ok) {
+      set({ submitting: false, error: res.error });
+      return false;
+    }
+    setWorkspaceScope(res.user.id);
+    set({ submitting: false, status: 'authenticated', user: res.user, cloud: true, permissionsHandled: false });
+    return true;
+  },
+
+  loginWithApple: async () => {
+    set({ submitting: true, error: null });
+    if (!isSupabaseConfigured()) {
+      set({ submitting: false, error: 'Connect Supabase in Settings to use Apple sign-in.' });
+      return false;
+    }
+    const res = await cloudSignInWithApple();
     if (!res.ok) {
       set({ submitting: false, error: res.error });
       return false;

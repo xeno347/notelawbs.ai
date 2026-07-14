@@ -5,12 +5,27 @@ import { useStore } from '../store';
 import { catStyle, useTheme } from '../theme';
 import { CARD_WIDTH } from './ExcerptCard';
 import { AI_CARD_WIDTH } from './AiCard';
+import { highlightScreenAnchor } from '../services/threadAnchors';
 
 function curvePath(x1: number, y1: number, x2: number, y2: number) {
-  const mx = (x1 + x2) / 2;
-  return `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;
+  const dx = x2 - x1;
+  const bend = Math.min(120, Math.max(36, Math.abs(dx) * 0.38));
+  const c1x = x1 + bend;
+  const c2x = x2 - bend;
+  return `M ${x1} ${y1} C ${c1x} ${y1}, ${c2x} ${y2}, ${x2} ${y2}`;
 }
 
+function marginAnchorY(page: number, numPages: number, pdfFrame: { top: number; h: number }) {
+  const ratio = (page - 0.5) / Math.max(numPages, 1);
+  return pdfFrame.top + Math.min(pdfFrame.h * 0.96, Math.max(pdfFrame.h * 0.04, ratio * pdfFrame.h));
+}
+
+/**
+ * Threads in window space:
+ * - PDF end: measured pdfFrame (fixed pane — stable under canvas zoom)
+ * - Card end: canvasOrigin + canvasTf.tx/ty + board(xy) * canvasTf.s
+ *   (matches nested translate → scale(0,0) on the board)
+ */
 export default function ThreadLayer() {
   const p = useTheme();
   const threadsOn = useStore((s) => s.threadsOn);
@@ -20,7 +35,11 @@ export default function ThreadLayer() {
   const pdfFrame = useStore((s) => s.pdfFrame);
   const canvasOrigin = useStore((s) => s.canvasOrigin);
   const canvasTf = useStore((s) => s.canvasTf);
+  const nodeSizes = useStore((s) => s.nodeSizes);
+  const layoutEpoch = useStore((s) => s.layoutEpoch);
   const currentPage = useStore((s) => s.currentPage);
+  const numPages = useStore((s) => s.numPages);
+  const activeDocId = useStore((s) => s.activeDocId);
   const hoverNodeId = useStore((s) => s.hoverNodeId);
 
   const wrapRef = useRef<View>(null);
@@ -31,10 +50,12 @@ export default function ThreadLayer() {
       setLayerOrigin((prev) => (prev.x === x && prev.y === y ? prev : { x, y }));
     });
 
-  // Re-measure only when geometry that can shift the layer changes — not on a timer.
   useEffect(() => {
-    if (threadsOn) measure();
-  }, [threadsOn, pdfFrame, canvasOrigin]);
+    if (!threadsOn) return;
+    measure();
+    const id = requestAnimationFrame(measure);
+    return () => cancelAnimationFrame(id);
+  }, [threadsOn, pdfFrame, canvasOrigin, canvasTf, nodes, nodeSizes, layoutEpoch, currentPage, highlights.length]);
 
   if (!threadsOn) return null;
 
@@ -46,18 +67,22 @@ export default function ThreadLayer() {
     pin?: { x: number; y: number };
   }> = [];
 
-  // Convert window coords into layer-local coords (layer is offset below the top bar).
   const lx = (x: number) => x - layerOrigin.x;
   const ly = (y: number) => y - layerOrigin.y;
 
   const nodeScreen = (id: string) => {
     const n = nodes.find((x) => x.id === id);
     if (!n) return null;
-    const w = n.type === 'ai' ? AI_CARD_WIDTH : CARD_WIDTH;
-    return {
-      x: lx(canvasOrigin.x + canvasTf.tx + (n.x + w / 2) * canvasTf.s),
-      y: ly(canvasOrigin.y + canvasTf.ty + (n.y + 44) * canvasTf.s),
-    };
+    const size = nodeSizes[id];
+    const w = size?.w || n.w || (n.type === 'ai' ? AI_CARD_WIDTH : CARD_WIDTH);
+    const h = size?.h || n.h || 108;
+    const isExcerpt = n.type === 'excerpt';
+    // Citation badge sits bottom-left on ExcerptCard.
+    const localX = isExcerpt ? 14 : w / 2;
+    const localY = isExcerpt ? Math.max(28, h - 16) : h / 2;
+    const winX = canvasOrigin.x + canvasTf.tx + (n.x + localX) * canvasTf.s;
+    const winY = canvasOrigin.y + canvasTf.ty + (n.y + localY) * canvasTf.s;
+    return { x: lx(winX), y: ly(winY), winY };
   };
 
   for (const node of nodes) {
@@ -66,52 +91,64 @@ export default function ThreadLayer() {
     if (!data.highlightId || !pdfFrame) continue;
     const h = highlights.find((x) => x.id === data.highlightId);
     if (!h) continue;
+    if (h.docId && h.docId !== activeDocId) continue;
 
     const tgt = nodeScreen(node.id);
     if (!tgt) continue;
 
-    const sx = lx(pdfFrame.left + (h.rect.x + h.rect.w / 2) * pdfFrame.w);
-    const sy = ly(pdfFrame.top + (h.rect.y + h.rect.h / 2) * pdfFrame.h);
+    const offPage = h.page !== currentPage;
+    const anchor = offPage
+      ? {
+          x: pdfFrame.left + pdfFrame.w * 0.98,
+          y: marginAnchorY(h.page, numPages, pdfFrame),
+        }
+      : highlightScreenAnchor(h, pdfFrame, tgt.winY);
+
+    const sx = lx(anchor.x);
+    const sy = ly(anchor.y);
     const cs = catStyle(data.category);
-    const offScreen = h.page !== currentPage;
     paths.push({
       d: curvePath(sx, sy, tgt.x, tgt.y),
       color: cs.color,
-      opacity: hoverNodeId && hoverNodeId !== node.id ? 0.22 : 0.8,
-      dashed: offScreen,
+      opacity: hoverNodeId && hoverNodeId !== node.id ? 0.22 : offPage ? 0.45 : 0.88,
+      dashed: offPage,
+      pin: { x: sx, y: sy },
     });
   }
 
   for (const link of ink.links) {
-    const from = {
-      x: lx(canvasOrigin.x + canvasTf.tx + link.canvasPoint.x * canvasTf.s),
-      y: ly(canvasOrigin.y + canvasTf.ty + link.canvasPoint.y * canvasTf.s),
-    };
+    const fromWinX = canvasOrigin.x + canvasTf.tx + link.canvasPoint.x * canvasTf.s;
+    const fromWinY = canvasOrigin.y + canvasTf.ty + link.canvasPoint.y * canvasTf.s;
+    const from = { x: lx(fromWinX), y: ly(fromWinY), winY: fromWinY };
     let to: { x: number; y: number } | null = null;
     let dashed = false;
 
     if (link.highlightId && pdfFrame) {
       const h = highlights.find((x) => x.id === link.highlightId);
-      if (h) {
-        to = {
-          x: lx(pdfFrame.left + (h.rect.x + h.rect.w / 2) * pdfFrame.w),
-          y: ly(pdfFrame.top + (h.rect.y + h.rect.h / 2) * pdfFrame.h),
-        };
-        dashed = h.page !== currentPage;
+      if (h && (!h.docId || h.docId === activeDocId)) {
+        const offPage = h.page !== currentPage;
+        const anchor = offPage
+          ? {
+              x: pdfFrame.left + pdfFrame.w * 0.98,
+              y: marginAnchorY(h.page, numPages, pdfFrame),
+            }
+          : highlightScreenAnchor(h, pdfFrame, from.winY);
+        to = { x: lx(anchor.x), y: ly(anchor.y) };
+        dashed = offPage;
       }
     } else if (link.page != null && pdfFrame) {
+      if (link.page !== currentPage) continue;
       to = {
         x: lx(pdfFrame.left + (link.x || 0) * pdfFrame.w),
         y: ly(pdfFrame.top + (link.y || 0) * pdfFrame.h),
       };
-      dashed = link.page !== currentPage;
     }
 
     if (!to) continue;
     paths.push({
       d: curvePath(from.x, from.y, to.x, to.y),
       color: p.accent,
-      opacity: 0.8,
+      opacity: dashed ? 0.45 : 0.8,
       dashed,
       pin: to,
     });
@@ -125,7 +162,6 @@ export default function ThreadLayer() {
           if (!path) return null;
           return (
             <React.Fragment key={i}>
-              {/* soft neon underlay */}
               <Path
                 path={path}
                 color={pth.color}
@@ -136,7 +172,6 @@ export default function ThreadLayer() {
                 <BlurMask blur={6} style="normal" />
                 {pth.dashed && <DashPathEffect intervals={[6, 4]} />}
               </Path>
-              {/* crisp thread */}
               <Path
                 path={path}
                 color={pth.color}
@@ -147,7 +182,7 @@ export default function ThreadLayer() {
                 {pth.dashed && <DashPathEffect intervals={[6, 4]} />}
               </Path>
               {pth.pin && (
-                <Circle cx={pth.pin.x} cy={pth.pin.y} r={4.5} color={p.accent}>
+                <Circle cx={pth.pin.x} cy={pth.pin.y} r={4.5} color={pth.color}>
                   <BlurMask blur={3} style="solid" />
                 </Circle>
               )}

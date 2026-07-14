@@ -55,9 +55,28 @@ The Google button falls back to a helpful message if these aren't set.
 
 ---
 
+## 2b. Apple sign-in (optional, iOS)
+
+1. In **Apple Developer → Identifiers**, enable **Sign In with Apple** on your
+   App ID (matching the app's bundle identifier).
+2. In **Supabase → Authentication → Providers → Apple**, enable the provider and
+   configure it with your Services ID / key (see Supabase's Apple guide).
+3. The native entitlement is already in
+   `ios/LitNotesCanvas/LitNotesCanvas.entitlements`
+   (`com.apple.developer.applesignin`). Rebuild once after `npm run pods`.
+4. On a **real iOS device** (or a simulator on iOS 13+), the Apple button on the
+   auth screen calls native Sign in with Apple and exchanges the identity token
+   with Supabase.
+
+Android Apple sign-in needs extra Apple Services ID setup and is not enabled in
+this build — the button explains that on Android.
+
+---
+
 ## 3. Native rebuild (once, after installing deps)
 
-New native modules were added (`@react-native-google-signin/google-signin`).
+New native modules were added (`@react-native-google-signin/google-signin`,
+`@invertase/react-native-apple-authentication`, `react-native-permissions`).
 Rebuild the apps:
 
 ```bash

@@ -11,11 +11,17 @@ import {
   Bell,
   Images,
   Check,
+  Lock,
+  Camera,
+  Mic,
 } from 'lucide-react-native';
 import { useTheme, useThemeStore, useThemeMode, RADIUS, type ThemeMode } from '../theme';
 import { useStore } from '../store';
 import { useAuth } from '../auth/authStore';
-import { getStoredKey, saveKey, clearKey } from '../research/service';
+import { useSessionLock } from '../auth/sessionLockStore';
+import { saveKey, clearKey } from '../research/service';
+import { getGroqKey, saveGroqKey, clearGroqKey } from '../services/aiClient';
+import { getSetting } from '../storage';
 import {
   getSupabaseOverrides,
   saveSupabaseOverrides,
@@ -24,7 +30,9 @@ import {
 import {
   PERMISSION_ITEMS,
   requestPermission,
-  loadPermissionState,
+  requestCapturePermissions,
+  openAppPermissionSettings,
+  checkPermission,
   type PermissionKey,
   type PermissionState,
 } from '../services/permissionsService';
@@ -33,6 +41,8 @@ import { AppButton, Field, Segmented } from './ui';
 const PERM_ICONS: Record<PermissionKey, React.ComponentType<any>> = {
   notifications: Bell,
   media: Images,
+  camera: Camera,
+  microphone: Mic,
 };
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -63,6 +73,8 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
 
   const user = useAuth((s) => s.user);
   const logout = useAuth((s) => s.logout);
+  const lockEnabled = useSessionLock((s) => s.enabled);
+  const setLockEnabled = useSessionLock((s) => s.setEnabled);
   const resetWorkspace = useStore((s) => s.resetWorkspace);
   const docName = useStore((s) => s.docName);
   const highlights = useStore((s) => s.highlights);
@@ -71,26 +83,32 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
   const setAutoOcr = useStore((s) => s.setAutoOcr);
 
   const [apiKey, setApiKey] = useState('');
+  const [groqKey, setGroqKey] = useState('');
   const [keyLoaded, setKeyLoaded] = useState(false);
   const [keySaved, setKeySaved] = useState(false);
+  const [groqSaved, setGroqSaved] = useState(false);
   const [permStatus, setPermStatus] = useState<Partial<Record<PermissionKey, PermissionState>>>({});
   const [sbUrl, setSbUrl] = useState('');
   const [sbKey, setSbKey] = useState('');
   const [sbSaved, setSbSaved] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [sbConfigured, setSbConfigured] = useState(isSupabaseConfigured());
 
   useEffect(() => {
-    getStoredKey().then((k) => {
+    getGroqKey().then((k) => {
+      if (k) setGroqKey(k);
+    });
+    getSetting('anthropic_key').then((k) => {
       if (k) setApiKey(k);
       setKeyLoaded(true);
     });
     (async () => {
       const entries = await Promise.all(
-        PERMISSION_ITEMS.map(async (it) => [it.key, await loadPermissionState(it.key)] as const),
+        PERMISSION_ITEMS.map(async (it) => [it.key, await checkPermission(it.key)] as const),
       );
       setPermStatus((s) => {
         const next = { ...s };
-        for (const [key, state] of entries) if (state) next[key] = state;
+        for (const [key, state] of entries) next[key] = state;
         return next;
       });
     })();
@@ -104,6 +122,13 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
     setSbConfigured(isSupabaseConfigured());
     setSbSaved(true);
     setTimeout(() => setSbSaved(false), 1800);
+  };
+
+  const onSaveGroqKey = async () => {
+    if (groqKey.trim()) await saveGroqKey(groqKey);
+    else await clearGroqKey();
+    setGroqSaved(true);
+    setTimeout(() => setGroqSaved(false), 1800);
   };
 
   const onSaveKey = async () => {
@@ -140,7 +165,26 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
 
   const allowPerm = async (key: PermissionKey) => {
     const state = await requestPermission(key);
-    setPermStatus((s) => ({ ...s, [key]: state }));
+    setPermStatus((s) => ({ ...s, [key]: state === 'blocked' ? 'denied' : state }));
+    if (state === 'blocked') {
+      Alert.alert(
+        'Enable in Settings',
+        'This permission was previously denied. Turn it on for LitNotes Canvas in system Settings.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => openAppPermissionSettings() },
+        ],
+      );
+    }
+  };
+
+  const allowCameraAndMic = async () => {
+    const res = await requestCapturePermissions();
+    setPermStatus((s) => ({
+      ...s,
+      camera: res.camera === 'blocked' ? 'denied' : res.camera,
+      microphone: res.microphone === 'blocked' ? 'denied' : res.microphone,
+    }));
   };
 
   const modeOptions: { key: ThemeMode; label: string; icon: React.ComponentType<any> }[] = [
@@ -181,14 +225,14 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
               <View style={{ flex: 1 }}>
                 <Text style={[styles.rowLabel, { color: p.text }]}>Auto text recognition</Text>
                 <Text style={[styles.rowSub, { color: p.textMuted }]}>
-                  Run OCR automatically as you turn pages so excerpts and search stay ready. Turn off
-                  to save battery on long sessions.
+                  Run OCR when you pause on a page. Off by default — use Scan in the reader when you
+                  need searchable text (saves battery and avoids scan flicker).
                 </Text>
               </View>
               <Switch
                 value={autoOcr}
                 onValueChange={setAutoOcr}
-                trackColor={{ true: p.accent, false: p.border }}
+                trackColor={{ true: p.tint, false: p.separator }}
                 thumbColor="#fff"
               />
             </View>
@@ -202,96 +246,146 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
               </View>
             </View>
             <RowDivider />
+            <View style={styles.row}>
+              <Lock size={18} color={p.textMid} />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.rowLabel, { color: p.text }]}>Lock when backgrounded</Text>
+                <Text style={[styles.rowSub, { color: p.textMuted }]}>
+                  Cover the workspace when you leave the app so notes stay private in the app switcher.
+                </Text>
+              </View>
+              <Switch
+                value={lockEnabled}
+                onValueChange={setLockEnabled}
+                trackColor={{ true: p.tint, false: p.separator }}
+                thumbColor="#fff"
+              />
+            </View>
+            <RowDivider />
             <Pressable style={styles.row} onPress={onLogout}>
               <LogOut size={18} color={p.danger} />
               <Text style={[styles.rowAction, { color: p.danger }]}>Sign out</Text>
             </Pressable>
           </Section>
 
-          <Section title="AI & research">
-            <View style={{ padding: 16, gap: 10 }}>
-              <Field
-                label="Anthropic API key"
-                value={apiKey}
-                onChangeText={setApiKey}
-                placeholder={keyLoaded ? 'sk-ant-…' : 'Loading…'}
-                secureTextEntry
-                autoCapitalize="none"
-                editable={keyLoaded}
-              />
-              <Text style={[styles.hint, { color: p.textMuted }]}>
-                Stored only on this device and sent directly to Anthropic. Without a key, research
-                runs in offline mode.
-              </Text>
-              <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
-                <AppButton label={keySaved ? 'Saved' : 'Save key'} variant="secondary" onPress={onSaveKey} />
-                {apiKey ? (
-                  <AppButton
-                    label="Clear"
-                    variant="ghost"
-                    onPress={() => {
-                      setApiKey('');
-                      clearKey();
-                    }}
-                  />
-                ) : null}
-              </View>
-            </View>
-          </Section>
-
-          <Section title="Collaboration">
-            <View style={{ padding: 16, gap: 10 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <View
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: 4,
-                    backgroundColor: sbConfigured ? p.success : p.textMuted,
-                  }}
-                />
-                <Text style={[styles.rowLabel, { color: p.text }]}>
-                  {sbConfigured ? 'Live sharing connected' : 'Live sharing not connected'}
+          <Section title="Research">
+            <View style={styles.row}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.rowLabel, { color: p.text }]}>AI research</Text>
+                <Text style={[styles.rowSub, { color: p.textMuted }]}>
+                  {groqKey || apiKey
+                    ? 'Live answers enabled on this device.'
+                    : 'Turn on Advanced below to add an API key for live legal answers.'}
                 </Text>
               </View>
-              <Text style={[styles.hint, { color: p.textMuted }]}>
-                Paste your Supabase project URL and anon key to enable real-time sharing and cloud
-                sign-in. Find them in your Supabase dashboard → Project Settings → API.
+              <Text style={{ color: groqKey || apiKey ? p.success : p.textMuted, fontWeight: '600', fontSize: 13 }}>
+                {groqKey || apiKey ? 'On' : 'Offline'}
               </Text>
-              <Field
-                label="Supabase URL"
-                value={sbUrl}
-                onChangeText={setSbUrl}
-                placeholder="https://xxxx.supabase.co"
-                autoCapitalize="none"
-              />
-              <Field
-                label="Anon key"
-                value={sbKey}
-                onChangeText={setSbKey}
-                placeholder="eyJhbGciOi…"
-                autoCapitalize="none"
-                secureTextEntry
-              />
-              <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
-                <AppButton label={sbSaved ? 'Saved' : 'Save & connect'} variant="secondary" onPress={onSaveSupabase} />
-                {sbUrl || sbKey ? (
-                  <AppButton
-                    label="Clear"
-                    variant="ghost"
-                    onPress={async () => {
-                      setSbUrl('');
-                      setSbKey('');
-                      await saveSupabaseOverrides('', '');
-                      setSbConfigured(isSupabaseConfigured());
-                    }}
-                  />
-                ) : null}
-              </View>
             </View>
           </Section>
 
+          <Section title="Sharing">
+            <View style={styles.row}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.rowLabel, { color: p.text }]}>Live collaboration</Text>
+                <Text style={[styles.rowSub, { color: p.textMuted }]}>
+                  {sbConfigured
+                    ? 'Cloud sharing is connected for invite links.'
+                    : 'Optional. Configure under Advanced if you need to share a live workspace.'}
+                </Text>
+              </View>
+              <Text style={{ color: sbConfigured ? p.success : p.textMuted, fontWeight: '600', fontSize: 13 }}>
+                {sbConfigured ? 'Connected' : 'Off'}
+              </Text>
+            </View>
+          </Section>
+
+          <Pressable
+            onPress={() => setShowAdvanced((v) => !v)}
+            style={{ paddingHorizontal: 4, paddingVertical: 8, marginBottom: 8 }}>
+            <Text style={{ color: p.tint, fontSize: 15, fontWeight: '600' }}>
+              {showAdvanced ? 'Hide Advanced' : 'Advanced…'}
+            </Text>
+          </Pressable>
+
+          {showAdvanced && (
+            <>
+              <Section title="AI keys">
+                <View style={{ padding: 16, gap: 10 }}>
+                  <Field
+                    label="Groq API key (preferred)"
+                    value={groqKey}
+                    onChangeText={setGroqKey}
+                    placeholder="gsk_…"
+                    secureTextEntry
+                    autoCapitalize="none"
+                    editable={keyLoaded}
+                  />
+                  <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+                    <AppButton label={groqSaved ? 'Saved' : 'Save Groq key'} variant="secondary" onPress={onSaveGroqKey} />
+                    {groqKey ? (
+                      <AppButton label="Clear" variant="ghost" onPress={() => { setGroqKey(''); clearGroqKey(); }} />
+                    ) : null}
+                  </View>
+                  <Field
+                    label="Anthropic API key (fallback)"
+                    value={apiKey}
+                    onChangeText={setApiKey}
+                    placeholder={keyLoaded ? 'sk-ant-…' : 'Loading…'}
+                    secureTextEntry
+                    autoCapitalize="none"
+                    editable={keyLoaded}
+                  />
+                  <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+                    <AppButton label={keySaved ? 'Saved' : 'Save Anthropic key'} variant="secondary" onPress={onSaveKey} />
+                    {apiKey ? (
+                      <AppButton label="Clear" variant="ghost" onPress={() => { setApiKey(''); clearKey(); }} />
+                    ) : null}
+                  </View>
+                </View>
+              </Section>
+
+              <Section title="Backend">
+                <View style={{ padding: 16, gap: 10 }}>
+                  <Field
+                    label="Supabase URL"
+                    value={sbUrl}
+                    onChangeText={setSbUrl}
+                    placeholder="https://xxxx.supabase.co"
+                    autoCapitalize="none"
+                  />
+                  <Field
+                    label="Anon key"
+                    value={sbKey}
+                    onChangeText={setSbKey}
+                    placeholder="eyJhbGciOi…"
+                    autoCapitalize="none"
+                    secureTextEntry
+                  />
+                  <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+                    <AppButton label={sbSaved ? 'Saved' : 'Save & connect'} variant="secondary" onPress={onSaveSupabase} />
+                    {sbUrl || sbKey ? (
+                      <AppButton
+                        label="Clear"
+                        variant="ghost"
+                        onPress={async () => {
+                          setSbUrl('');
+                          setSbKey('');
+                          await saveSupabaseOverrides('', '');
+                          setSbConfigured(isSupabaseConfigured());
+                        }}
+                      />
+                    ) : null}
+                  </View>
+                </View>
+              </Section>
+            </>
+          )}
+
           <Section title="Permissions">
+            <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 }}>
+              <AppButton label="Allow Camera & Microphone" onPress={allowCameraAndMic} full />
+            </View>
             {PERMISSION_ITEMS.map((item, i) => {
               const Icon = PERM_ICONS[item.key];
               const granted = permStatus[item.key] === 'granted';

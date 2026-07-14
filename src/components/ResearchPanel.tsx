@@ -130,21 +130,21 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
           <ScrollView style={s.body} contentContainerStyle={s.bodyContent}>
             <TextInput
               style={s.queryInput}
-              placeholder="Frame a plain-language research question…"
+              placeholder="Ask a legal question — e.g. Can anticipatory bail be cancelled?"
               placeholderTextColor={p.textMuted}
               value={query}
               onChangeText={setQuery}
               multiline
             />
             <TouchableOpacity style={s.runBtn} onPress={doResearch} disabled={loading}>
-              <Text style={s.runText}>{loading ? 'Researching…' : 'Run research'}</Text>
+              <Text style={s.runText}>{loading ? 'Working…' : 'Ask'}</Text>
             </TouchableOpacity>
 
             {loading && (
               <View style={s.stages}>
                 {STAGES.map((label, i) => (
                   <View key={label} style={s.stageRow}>
-                    <PulseDot color={i <= stage ? p.accent : p.border} active={i === stage} />
+                    <PulseDot color={i <= stage ? p.tint : p.border} active={i === stage} />
                     <Text style={[s.stageLabel, i <= stage && { color: p.text }]}>{label}</Text>
                   </View>
                 ))}
@@ -153,14 +153,14 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
 
             {!hasKey && (
               <View style={s.keyBox}>
-                <Text style={s.keyTitle}>Enable live AI research</Text>
+                <Text style={s.keyTitle}>Enable live answers</Text>
                 <Text style={s.keyHint}>
-                  Paste your Anthropic API key. Stored only on this device and sent directly to
-                  Anthropic — no backend server.
+                  Paste a Groq key (gsk_…) or Anthropic key (sk-ant-…). Stored only on this device.
+                  Without a key, research uses the on-device Indian case pack.
                 </Text>
                 <TextInput
                   style={s.keyInput}
-                  placeholder="sk-ant-…"
+                  placeholder="gsk_… or sk-ant-…"
                   placeholderTextColor={p.textMuted}
                   value={keyInput}
                   onChangeText={setKeyInput}
@@ -262,7 +262,7 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       borderBottomWidth: 1,
       borderBottomColor: p.border,
     },
-    title: { fontSize: 20, fontWeight: '700', color: p.text, fontFamily: SERIF },
+    title: { fontSize: 22, fontWeight: '700', color: p.text },
     badge: { alignSelf: 'flex-start', marginTop: 4, paddingHorizontal: 8, paddingVertical: 2, borderRadius: RADIUS.sm },
     badgeLive: { backgroundColor: p.successSoft },
     badgeOffline: { backgroundColor: p.warningSoft },
@@ -285,12 +285,12 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       marginBottom: 10,
     },
     runBtn: {
-      backgroundColor: p.accent,
+      backgroundColor: p.tint,
       borderRadius: RADIUS.md,
       paddingVertical: 12,
       alignItems: 'center',
       marginBottom: 16,
-      ...glow(p.accentGlow, 0.6),
+      ...glow(p.tintSoft, 0.55),
     },
     runText: { color: '#fff', fontWeight: '700', fontSize: 14 },
     stages: { marginBottom: 16, gap: 10 },
@@ -303,7 +303,7 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     keyBtn: { backgroundColor: p.text, borderRadius: RADIUS.sm, paddingVertical: 9, alignItems: 'center' },
     keyBtnText: { color: p.surface, fontWeight: '700' },
     keyStatus: { fontSize: 12, color: p.textMuted, marginTop: 8 },
-    errorText: { fontSize: 13, color: p.accent, marginBottom: 12 },
+    errorText: { fontSize: 13, color: p.tint, marginBottom: 12 },
     memo: { backgroundColor: p.surfaceGlass, borderWidth: 1, borderColor: p.border, borderRadius: RADIUS.lg, padding: 18 },
     memoTitle: { fontSize: 18, fontWeight: '700', color: p.text, fontFamily: SERIF, marginBottom: 12, textAlign: 'center' },
     enhancedBox: { backgroundColor: p.bg2, borderRadius: 8, padding: 10, marginBottom: 12 },
@@ -315,8 +315,8 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     sectionBody: { fontSize: 13.5, lineHeight: 21, color: p.textMid, marginBottom: 8, fontFamily: SERIF, textAlign: 'justify' },
     citeRows: { marginBottom: 8 },
     citeRow: { fontSize: 11.5, color: p.textMuted, marginBottom: 2, fontFamily: SERIF },
-    toCanvas: { alignSelf: 'flex-start', borderWidth: 1, borderColor: p.accent, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4 },
-    toCanvasText: { color: p.accent, fontSize: 12, fontWeight: '700' },
+    toCanvas: { alignSelf: 'flex-start', borderWidth: 1, borderColor: p.tint, borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4 },
+    toCanvasText: { color: p.tint, fontSize: 12, fontWeight: '700' },
     sources: { marginTop: 8, borderTopWidth: 2, borderTopColor: p.text, paddingTop: 10 },
     sourcesLabel: { fontSize: 11, fontWeight: '800', letterSpacing: 0.8, color: p.textMuted, marginBottom: 6 },
     sourceItem: { fontSize: 12, color: p.textMid, marginBottom: 4, fontFamily: SERIF },

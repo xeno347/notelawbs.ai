@@ -1,13 +1,16 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, useWindowDimensions } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, useWindowDimensions, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Bell, Images, ShieldCheck, Check } from 'lucide-react-native';
-import { useTheme, RADIUS, ELEVATION } from '../theme';
+import { Bell, Images, ShieldCheck, Check, Camera, Mic } from 'lucide-react-native';
+import { useTheme, RADIUS, ELEVATION, TYPE } from '../theme';
 import { useAuth } from '../auth/authStore';
 import {
   PERMISSION_ITEMS,
   requestPermission,
   requestAllPermissions,
+  requestCapturePermissions,
+  openAppPermissionSettings,
+  checkPermission,
   type PermissionKey,
   type PermissionState,
 } from '../services/permissionsService';
@@ -16,6 +19,8 @@ import { AppButton, Aurora } from './ui';
 const ICONS: Record<PermissionKey, React.ComponentType<any>> = {
   notifications: Bell,
   media: Images,
+  camera: Camera,
+  microphone: Mic,
 };
 
 export default function PermissionsScreen() {
@@ -27,12 +32,46 @@ export default function PermissionsScreen() {
   const user = useAuth((s) => s.user);
 
   const [statuses, setStatuses] = useState<Partial<Record<PermissionKey, PermissionState>>>({});
-  const [busy, setBusy] = useState<PermissionKey | 'all' | null>(null);
+  const [busy, setBusy] = useState<PermissionKey | 'all' | 'capture' | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const camera = await checkPermission('camera');
+      const microphone = await checkPermission('microphone');
+      if (!alive) return;
+      setStatuses((s) => ({ ...s, camera, microphone }));
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const allow = async (key: PermissionKey) => {
     setBusy(key);
     const state = await requestPermission(key);
-    setStatuses((s) => ({ ...s, [key]: state }));
+    setStatuses((s) => ({ ...s, [key]: state === 'blocked' ? 'denied' : state }));
+    if (state === 'blocked') {
+      Alert.alert(
+        'Enable in Settings',
+        'This permission was previously denied. Turn it on in Settings → LitNotes Canvas.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => openAppPermissionSettings() },
+        ],
+      );
+    }
+    setBusy(null);
+  };
+
+  const enableCapture = async () => {
+    setBusy('capture');
+    const res = await requestCapturePermissions();
+    setStatuses((s) => ({
+      ...s,
+      camera: res.camera === 'blocked' ? 'denied' : res.camera,
+      microphone: res.microphone === 'blocked' ? 'denied' : res.microphone,
+    }));
     setBusy(null);
   };
 
@@ -46,16 +85,24 @@ export default function PermissionsScreen() {
 
   const card = (
     <View style={[styles.card, { backgroundColor: p.surface, borderColor: p.border }, ELEVATION.panel]}>
-      <View style={[styles.badge, { backgroundColor: p.accentSoft }]}>
-        <ShieldCheck size={26} color={p.accent} />
+      <View style={[styles.badge, { backgroundColor: p.tintSoft }]}>
+        <ShieldCheck size={26} color={p.tint} />
       </View>
       <Text style={[styles.title, { color: p.text }]}>
         {user?.displayName ? `You're in, ${user.displayName.split(' ')[0]}.` : "You're all set."}
       </Text>
       <Text style={[styles.sub, { color: p.textMid }]}>
-        Grant a couple of permissions so everything works smoothly. You can change these later in
-        Settings.
+        Allow Camera and Microphone so LitNotes can capture documents and voice notes. You can change
+        these anytime in Settings.
       </Text>
+
+      <View style={{ height: 16 }} />
+      <AppButton
+        label="Allow Camera & Microphone"
+        onPress={enableCapture}
+        loading={busy === 'capture'}
+        full
+      />
 
       <View style={{ height: 20 }} />
       <View style={{ gap: 12 }}>
@@ -63,7 +110,7 @@ export default function PermissionsScreen() {
           const Icon = ICONS[item.key];
           const state = statuses[item.key];
           const granted = state === 'granted';
-          const denied = state === 'denied';
+          const denied = state === 'denied' || state === 'blocked';
           return (
             <View
               key={item.key}
@@ -117,42 +164,46 @@ export default function PermissionsScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   scroll: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-  card: { borderRadius: RADIUS.xl, borderWidth: 1, padding: 28, width: '100%' },
+  card: {
+    borderRadius: RADIUS.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 28,
+  },
   badge: {
     width: 52,
     height: 52,
-    borderRadius: RADIUS.lg,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
   },
-  title: { fontSize: 22, fontWeight: '800', letterSpacing: 0.1 },
-  sub: { fontSize: 14, marginTop: 8, lineHeight: 20 },
+  title: { ...TYPE.title2, marginBottom: 8 },
+  sub: { ...TYPE.subhead, lineHeight: 22 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     padding: 14,
-    borderRadius: RADIUS.lg,
-    borderWidth: 1,
+    borderRadius: RADIUS.md,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   rowIcon: {
     width: 40,
     height: 40,
-    borderRadius: RADIUS.md,
-    borderWidth: 1,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  rowLabel: { fontSize: 15, fontWeight: '700' },
-  rowDesc: { fontSize: 12.5, marginTop: 2, lineHeight: 17 },
+  rowLabel: { ...TYPE.headline, fontSize: 15 },
+  rowDesc: { ...TYPE.caption1, marginTop: 2 },
   granted: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: RADIUS.pill,
   },
-  grantedText: { fontSize: 12.5, fontWeight: '700' },
+  grantedText: { fontSize: 12, fontWeight: '700' },
 });

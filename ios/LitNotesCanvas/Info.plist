@@ -24,16 +24,34 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- Allow iPad Split View / Stage Manager multitasking gestures -->
+	<key>UIRequiresFullScreen</key>
+	<false/>
+	<!-- Trackpad, mouse, and Apple Pencil indirect input -->
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+		<integer>2</integer>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-	  <!-- Do not change NSAllowsArbitraryLoads to true, or you will risk app rejection! -->
 		<key>NSAllowsArbitraryLoads</key>
 		<false/>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string></string>
+	<key>NSCameraUsageDescription</key>
+	<string>LitNotes Canvas uses the camera to capture judgment pages and documents for OCR.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>LitNotes Canvas can use the microphone for voice notes and spoken research prompts.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>LitNotes Canvas needs photo library access to open images and save exported canvas snapshots.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>LitNotes Canvas needs permission to save exported canvas snapshots and note bundles to your Photos.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>LitNotes Canvas can use Face ID to unlock a locked research session.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIRequiredDeviceCapabilities</key>
@@ -57,6 +75,26 @@
 	<true/>
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<key>UISupportsDocumentBrowser</key>
+	<true/>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.adobe.pdf</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>pdf</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/pdf</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 	<!-- Deep link for live-share invites: litnotes://join/<code>.
 	     For Google sign-in, add a second URL scheme with your reversed iOS
 	     client ID (see COLLABORATION_SETUP.md). -->
@@ -68,6 +106,14 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>litnotes</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Google Sign-In</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.576870734165-q31qv9o2mo9c12c25lt9lh9o3ktjcevj</string>
 			</array>
 		</dict>
 	</array>

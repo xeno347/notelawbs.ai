@@ -6,17 +6,39 @@ import {
   StyleSheet,
   PanResponder,
   LayoutRectangle,
+  Alert,
+  Platform,
 } from 'react-native';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+} from 'react-native-reanimated';
 import { Canvas, Path, Circle, Skia, Points, vec } from '@shopify/react-native-skia';
-import { Pen, Eraser, Undo2, Link2, Maximize2 } from 'lucide-react-native';
-import { useStore, type Stroke } from '../store';
+import Svg, { Polyline } from 'react-native-svg';
+import { useStore, type Stroke, type Edge } from '../store';
 import { useCollab, useViewerLocked } from '../collab/collabStore';
-import { getPalette, useTheme, SERIF, RADIUS, ELEVATION } from '../theme';
+import { useAnnotation, INK_SWATCHES } from '../annotationStore';
+import {
+  shouldAcceptDraw,
+  pencilStrokeWidth,
+  createPencilDoubleTap,
+  readForce,
+} from '../services/pencilGestures';
+import { getPalette, useTheme, RADIUS, ELEVATION } from '../theme';
 import ExcerptCard, { CARD_WIDTH } from './ExcerptCard';
 import AiCard, { AI_CARD_WIDTH } from './AiCard';
+import NoteCard, { NOTE_CARD_WIDTH } from './NoteCard';
+import GroupCard, { GROUP_CARD_WIDTH } from './GroupCard';
 import CollabCursors from './CollabCursors';
 
 const BOARD = 6000;
+
+function nodeWidth(type?: string) {
+  if (type === 'ai') return AI_CARD_WIDTH;
+  if (type === 'note') return NOTE_CARD_WIDTH;
+  if (type === 'group') return GROUP_CARD_WIDTH;
+  return CARD_WIDTH;
+}
 
 function pointsToSvg(points: Array<{ x: number; y: number }>): string {
   if (!points.length) return '';
@@ -38,12 +60,11 @@ export default function CanvasBoard() {
   const ink = useStore((s) => s.ink);
   const linking = useStore((s) => s.linking);
   const addStroke = useStore((s) => s.addStroke);
-  const undoStroke = useStore((s) => s.undoStroke);
   const eraseAt = useStore((s) => s.eraseAt);
-  const startInkLink = useStore((s) => s.startInkLink);
   const setInkLinkPoint = useStore((s) => s.setInkLinkPoint);
   const cancelLink = useStore((s) => s.cancelLink);
   const addEdge = useStore((s) => s.addEdge);
+  const updateEdge = useStore((s) => s.updateEdge);
   const setCanvasOrigin = useStore((s) => s.setCanvasOrigin);
   const setCanvasTf = useStore((s) => s.setCanvasTf);
   const setCanvasViewport = useStore((s) => s.setCanvasViewport);
@@ -53,21 +74,102 @@ export default function CanvasBoard() {
   const sendCursor = useCollab((s) => s.sendCursor);
   const viewerLocked = useViewerLocked();
   const boardRef = useRef<View>(null);
+  const layoutEpoch = useStore((s) => s.layoutEpoch);
 
   const [container, setContainer] = useState<LayoutRectangle | null>(null);
-  const [drawMode, setDrawMode] = useState(false);
-  const [eraseMode, setEraseMode] = useState(false);
-  const [inkColor, setInkColor] = useState(0);
+  const tool = useAnnotation((s) => s.tool);
+  const inkColor = useAnnotation((s) => s.inkColor);
+  const fingerDraw = useAnnotation((s) => s.fingerDraw);
+  const fitSerial = useAnnotation((s) => s.fitSerial);
+  const drawMode = tool === 'pen' || tool === 'highlighter';
+  const eraseMode = tool === 'eraser';
   const [connectSource, setConnectSource] = useState<string | null>(null);
+  // `tf` is the *committed* transform used by React-rendered layers (cards,
+  // grid, thread overlay). The live pan/zoom runs on the UI thread through the
+  // shared values below so gestures never wait on a React re-render — that is
+  // what previously made panning tear.
   const [tf, setTf] = useState({ s: 1, tx: 20, ty: 20 });
+  const [gridTf, setGridTf] = useState(tf);
   const [liveStroke, setLiveStroke] = useState<Stroke | null>(null);
+  const [livePointsSvg, setLivePointsSvg] = useState('');
+
+  const sScale = useSharedValue(1);
+  const sX = useSharedValue(20);
+  const sY = useSharedValue(20);
 
   const tfRef = useRef(tf);
-  tfRef.current = tf;
+  const commitTs = useRef(0);
+  const liveStrokeRaf = useRef<number | null>(null);
+  const inkColors = useMemo(() => [...INK_SWATCHES], []);
+
+  // Nested translate → scale(about 0,0) so screen = board * s + t
+  // (matches ThreadLayer / drag math). A single translate+scale list scales the
+  // translation too and makes zoom + threads drift.
+  const translateStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: sX.value }, { translateY: sY.value }],
+  }));
+  const scaleStyle = useAnimatedStyle(() => {
+    const s = sScale.value;
+    // Scale about top-left without transformOrigin (string/array both crash or warn
+    // in Reanimated on iOS). Compensate default center-origin scale.
+    const c = BOARD / 2;
+    return {
+      transform: [
+        { scale: s },
+        { translateX: -c * (1 - s) },
+        { translateY: -c * (1 - s) },
+      ],
+    };
+  });
+
+  // Push a transform to every layer at once: UI thread (shared values) + the
+  // committed React state used by cards/grid/overlays. `animate` springs the
+  // shared values for programmatic jumps (Fit / focus); gestures set them live.
+  const applyTf = useCallback(
+    (next: { s: number; tx: number; ty: number }, animate = false) => {
+      tfRef.current = next;
+      useStore.getState().setCanvasTf(next);
+      if (animate) {
+        // Instant shared values when threads need accuracy; spring only the grid feel.
+        sScale.value = next.s;
+        sX.value = next.tx;
+        sY.value = next.ty;
+      } else {
+        sScale.value = next.s;
+        sX.value = next.tx;
+        sY.value = next.ty;
+      }
+      setTf(next);
+    },
+    [sScale, sX, sY],
+  );
+
+  // During a live gesture we only mirror the transform into React state on a
+  // throttle (grid + card scale), while the shared values drive motion at 60fps.
+  const commitDuringGesture = useCallback((next: { s: number; tx: number; ty: number }) => {
+    tfRef.current = next;
+    // Threads + card drag read canvasTf from the store — keep it live every frame.
+    useStore.getState().setCanvasTf(next);
+    const now = Date.now();
+    if (now - commitTs.current > 32) {
+      commitTs.current = now;
+      setTf(next);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (fitSerial > 0) applyTf({ s: 1, tx: 20, ty: 20 }, true);
+  }, [fitSerial, applyTf]);
 
   useEffect(() => {
     setCanvasTf(tf);
   }, [tf, setCanvasTf]);
+
+  // Debounce grid updates so pan/zoom stays fluid
+  useEffect(() => {
+    const t = setTimeout(() => setGridTf(tf), 80);
+    return () => clearTimeout(t);
+  }, [tf]);
 
   // Search / thread jumps land here: center the target node and flash it briefly.
   useEffect(() => {
@@ -77,10 +179,10 @@ export default function CanvasBoard() {
       clearFocusNode();
       return;
     }
-    const w = n.type === 'ai' ? AI_CARD_WIDTH : CARD_WIDTH;
+    const w = nodeWidth(n.type);
     const boardX = n.x + w / 2;
     const boardY = n.y + 60;
-    setTf({ s: 1, tx: container.width / 2 - boardX, ty: container.height / 2 - boardY });
+    applyTf({ s: 1, tx: container.width / 2 - boardX, ty: container.height / 2 - boardY }, true);
     setHoverNodeIdGlobal(focusNodeId);
     const t = setTimeout(() => {
       setHoverNodeIdGlobal(null);
@@ -90,41 +192,58 @@ export default function CanvasBoard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusNodeId, container]);
 
-  const publishOrigin = () => {
+  const publishOrigin = useCallback(() => {
     boardRef.current?.measureInWindow((x, y) => setCanvasOrigin({ x, y }));
-  };
+  }, [setCanvasOrigin]);
+
+  useEffect(() => {
+    publishOrigin();
+  }, [layoutEpoch, publishOrigin]);
   const gestureStart = useRef({ s: 1, tx: 0, ty: 0, dist: 0, focal: { x: 0, y: 0 } });
   const strokeRef = useRef<Stroke | null>(null);
+  const pencilDoubleTap = useRef(
+    createPencilDoubleTap(() => useAnnotation.getState().cyclePencilTool()),
+  );
 
-  const toBoard = (x: number, y: number) => {
-    const t = tfRef.current;
-    return { x: (x - t.tx) / t.s, y: (y - t.ty) / t.s };
-  };
+  // Draw coords are local to the transformed board (draw layer sits inside the transform).
+  const toBoard = (x: number, y: number) => ({ x, y });
 
   const drawing = drawMode || eraseMode || (linking.active && linking.step === 'canvas');
 
-  // Board pan + pinch (empty space); cards claim first for drag.
+  // Board pan + pinch. Notes-style: finger pans even in Pen mode; Apple Pencil draws.
   const boardPan = useMemo(
     () =>
       PanResponder.create({
-        onMoveShouldSetPanResponder: (_e, g) =>
-          !drawing && (Math.abs(g.dx) > 3 || Math.abs(g.dy) > 3 || g.numberActiveTouches === 2),
+        onStartShouldSetPanResponderCapture: (e) => (e.nativeEvent.touches?.length || 0) >= 2,
+        onMoveShouldSetPanResponderCapture: (_e, g) => g.numberActiveTouches >= 2,
+        onMoveShouldSetPanResponder: (e, g) => {
+          if (g.numberActiveTouches === 2) return true;
+          if (drawing && shouldAcceptDraw(e, fingerDraw)) return false;
+          // Leave room for cards to claim 1-finger drags first (they use dx>3).
+          return Math.abs(g.dx) > 10 || Math.abs(g.dy) > 10;
+        },
         onPanResponderGrant: (evt) => {
           const t = tfRef.current;
           const touches = evt.nativeEvent.touches;
+          // Prefer page coords mapped through canvasOrigin — more stable than locationX on iPad.
+          const origin = useStore.getState().canvasOrigin;
+          const focal =
+            touches.length === 2
+              ? {
+                  x: (touches[0].pageX + touches[1].pageX) / 2 - origin.x,
+                  y: (touches[0].pageY + touches[1].pageY) / 2 - origin.y,
+                }
+              : { x: 0, y: 0 };
           gestureStart.current = {
             s: t.s,
             tx: t.tx,
             ty: t.ty,
             dist: touches.length === 2 ? dist(touches) : 0,
-            focal:
-              touches.length === 2
-                ? {
-                    x: (touches[0].locationX + touches[1].locationX) / 2,
-                    y: (touches[0].locationY + touches[1].locationY) / 2,
-                  }
-                : { x: 0, y: 0 },
+            focal,
           };
+          strokeRef.current = null;
+          setLiveStroke(null);
+          setLivePointsSvg('');
         },
         onPanResponderMove: (evt, g) => {
           const touches = evt.nativeEvent.touches;
@@ -136,74 +255,148 @@ export default function CanvasBoard() {
             const f = start.focal;
             const boardFx = (f.x - start.tx) / start.s;
             const boardFy = (f.y - start.ty) / start.s;
-            setTf({ s, tx: f.x - boardFx * s, ty: f.y - boardFy * s });
+            const next = { s, tx: f.x - boardFx * s, ty: f.y - boardFy * s };
+            sScale.value = next.s;
+            sX.value = next.tx;
+            sY.value = next.ty;
+            commitDuringGesture(next);
           } else {
-            setTf({ s: start.s, tx: start.tx + g.dx, ty: start.ty + g.dy });
+            const next = { s: start.s, tx: start.tx + g.dx, ty: start.ty + g.dy };
+            sX.value = next.tx;
+            sY.value = next.ty;
+            commitDuringGesture(next);
             const t0 = touches[0];
             if (t0) sendCursor((t0.locationX - start.tx) / start.s, (t0.locationY - start.ty) / start.s);
           }
         },
+        onPanResponderRelease: () => {
+          const next = tfRef.current;
+          setTf(next);
+          useStore.getState().setCanvasTf(next);
+          publishOrigin();
+        },
+        onPanResponderTerminate: () => {
+          const next = tfRef.current;
+          setTf(next);
+          useStore.getState().setCanvasTf(next);
+          publishOrigin();
+        },
       }),
-    [drawing, sendCursor],
+    [drawing, fingerDraw, sendCursor, sScale, sX, sY, commitDuringGesture, publishOrigin],
   );
 
-  // Draw / erase / link overlay (on top when active)
+  // Ink under cards — Pencil draws board ink; excerpt cards ignore pointers while inking.
   const drawPan = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: () => true,
+        onStartShouldSetPanResponder: (evt) => {
+          if ((evt.nativeEvent.touches?.length || 1) !== 1) return false;
+          if (linking.active && linking.step === 'canvas') return true;
+          if (!drawMode && !eraseMode) return false;
+          return shouldAcceptDraw(evt, fingerDraw);
+        },
+        onMoveShouldSetPanResponder: (evt) => shouldAcceptDraw(evt, fingerDraw) || eraseMode,
+        onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (evt) => {
-          const { locationX, locationY, force } = evt.nativeEvent as any;
+          if (pencilDoubleTap.current(evt)) return;
+          const { locationX, locationY } = evt.nativeEvent as any;
+          const force = readForce(evt);
           const bp = toBoard(locationX, locationY);
           if (linking.active && linking.step === 'canvas') {
             setInkLinkPoint(bp);
             return;
           }
           if (eraseMode) {
-            eraseAt(bp.x, bp.y, 16 / tfRef.current.s);
+            eraseAt(bp.x, bp.y, 22 / Math.max(0.3, tfRef.current.s));
             return;
           }
+          const width =
+            tool === 'highlighter' || tool === 'pen'
+              ? pencilStrokeWidth(tool, force)
+              : pencilStrokeWidth('pen', force);
           const st: Stroke = {
             id: `${Date.now()}`,
             color: inkColor,
-            width: Math.max(1.5, (force || 0.5) * 3.5),
+            width,
             points: [bp],
           };
           strokeRef.current = st;
           setLiveStroke(st);
+          setLivePointsSvg(`${bp.x},${bp.y}`);
         },
         onPanResponderMove: (evt) => {
-          const { locationX, locationY } = evt.nativeEvent;
+          const { locationX, locationY } = evt.nativeEvent as any;
+          const force = readForce(evt);
           const bp = toBoard(locationX, locationY);
           sendCursor(bp.x, bp.y);
           if (eraseMode) {
-            eraseAt(bp.x, bp.y, 16 / tfRef.current.s);
+            eraseAt(bp.x, bp.y, 22 / Math.max(0.3, tfRef.current.s));
             return;
           }
           if (!strokeRef.current) return;
           strokeRef.current.points.push(bp);
-          setLiveStroke({ ...strokeRef.current, points: [...strokeRef.current.points] });
+          if (tool === 'pen' && force > 0) {
+            strokeRef.current.width = pencilStrokeWidth('pen', force);
+          }
+          if (liveStrokeRaf.current != null) return;
+          liveStrokeRaf.current = requestAnimationFrame(() => {
+            liveStrokeRaf.current = null;
+            const pts = strokeRef.current?.points;
+            if (!pts?.length) return;
+            setLivePointsSvg(pts.map((pt) => `${pt.x},${pt.y}`).join(' '));
+            setLiveStroke(strokeRef.current ? { ...strokeRef.current } : null);
+          });
         },
         onPanResponderRelease: () => {
+          if (liveStrokeRaf.current != null) {
+            cancelAnimationFrame(liveStrokeRaf.current);
+            liveStrokeRaf.current = null;
+          }
           if (strokeRef.current && strokeRef.current.points.length > 1) {
             addStroke(strokeRef.current);
           }
           strokeRef.current = null;
           setLiveStroke(null);
+          setLivePointsSvg('');
         },
       }),
-    [eraseMode, inkColor, linking, setInkLinkPoint, eraseAt, addStroke, sendCursor],
+    [
+      eraseMode,
+      inkColor,
+      linking,
+      setInkLinkPoint,
+      eraseAt,
+      addStroke,
+      sendCursor,
+      drawMode,
+      fingerDraw,
+      tool,
+    ],
   );
-
-  const inkColors = useMemo(() => [p.ink1, p.ink2], [p.ink1, p.ink2]);
-
   const handleConnectTo = useCallback(
     (id: string) => {
-      if (connectSource) addEdge(connectSource, id);
+      if (!connectSource) return;
+      addEdge(connectSource, id);
+      const edge = useStore.getState().edges.find((e) => e.source === connectSource && e.target === id);
       setConnectSource(null);
+      if (edge && Platform.OS === 'ios' && typeof Alert.prompt === 'function') {
+        Alert.prompt(
+          'Connection label',
+          'Optional label for this link (e.g. supports, contradicts)',
+          [
+            { text: 'Skip', style: 'cancel' },
+            {
+              text: 'Save',
+              onPress: (label?: string) => {
+                if (label?.trim()) updateEdge(edge.id, { label: label.trim() });
+              },
+            },
+          ],
+          'plain-text',
+        );
+      }
     },
-    [connectSource, addEdge],
+    [connectSource, addEdge, updateEdge],
   );
 
   const s = styles(p);
@@ -216,106 +409,82 @@ export default function CanvasBoard() {
         setCanvasViewport({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height });
         publishOrigin();
       }}>
-      {container && <DotGrid width={container.width} height={container.height} tf={tf} color={p.dotGrid} />}
+      {container && <DotGrid width={container.width} height={container.height} tf={gridTf} color={p.dotGrid} />}
       <View ref={boardRef} style={s.board} onLayout={publishOrigin} {...boardPan.panHandlers}>
-        <View
-          style={{
-            position: 'absolute',
-            width: BOARD,
-            height: BOARD,
-            transform: [{ translateX: tf.tx }, { translateY: tf.ty }, { scale: tf.s }],
-            // @ts-ignore RN 0.74+ supports transformOrigin
-            transformOrigin: '0 0',
-          }}>
-          {/* edges (memoized — unaffected by pan/zoom) */}
-          <EdgesLayer edges={edges} nodes={nodes} color={p.accent} />
-
-          {/* persisted ink + links (memoized) */}
-          <InkLayer ink={ink} inkColors={inkColors} accent={p.accent} />
-
-          {/* live stroke only — cheap, re-renders while drawing */}
-          {liveStroke && (
-            <Canvas
-              style={{ width: BOARD, height: BOARD, position: 'absolute' }}
-              pointerEvents="none">
-              <Path
-                path={pointsToSvg(liveStroke.points)}
-                color={inkColors[liveStroke.color] || inkColors[0]}
-                style="stroke"
-                strokeWidth={liveStroke.width}
-                strokeCap="round"
-                strokeJoin="round"
-              />
-            </Canvas>
-          )}
-
-          {/* cards */}
-          <View
-            style={StyleSheet.absoluteFill}
-            pointerEvents={viewerLocked ? 'none' : 'box-none'}>
-            {nodes.map((n) =>
-              n.type === 'ai' ? (
-                <AiCard
-                  key={n.id}
-                  node={n}
-                  scale={tf.s}
-                  connectSource={connectSource}
-                  onConnectStart={setConnectSource}
-                  onConnectTo={handleConnectTo}
-                />
-              ) : (
-                <ExcerptCard
-                  key={n.id}
-                  node={n}
-                  scale={tf.s}
-                  connectSource={connectSource}
-                  onConnectStart={setConnectSource}
-                  onConnectTo={handleConnectTo}
-                />
-              ),
+        <Animated.View style={[{ position: 'absolute', left: 0, top: 0 }, translateStyle]}>
+          <Animated.View style={[{ width: BOARD, height: BOARD }, scaleStyle]}>
+            {/* Ink under cards so Pencil draws on empty canvas; cards go transparent while inking */}
+            {drawing && (
+              <View style={[StyleSheet.absoluteFill, { zIndex: 1 }]} {...drawPan.panHandlers} />
             )}
-          </View>
 
-          {/* live peer cursors */}
-          <CollabCursors scale={tf.s} />
-        </View>
+            <EdgesLayer edges={edges} nodes={nodes} color={p.danger} labelColor={p.textMid} />
+            <InkLayer ink={ink} inkColors={inkColors} accent={p.accent} />
+
+            {liveStroke && livePointsSvg.length > 0 && (
+              <Svg
+                width={BOARD}
+                height={BOARD}
+                style={{ position: 'absolute', left: 0, top: 0, zIndex: 2 }}
+                pointerEvents="none">
+                <Polyline
+                  points={livePointsSvg}
+                  fill="none"
+                  stroke={inkColors[liveStroke.color] || inkColors[0]}
+                  strokeWidth={liveStroke.width}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </Svg>
+            )}
+
+            <View
+              style={[StyleSheet.absoluteFill, { zIndex: 8 }]}
+              pointerEvents={viewerLocked ? 'none' : 'box-none'}>
+              {nodes.map((n) => (
+                <View
+                  key={n.id}
+                  pointerEvents="auto"
+                  style={{ zIndex: (n.z || 1) + 10 }}>
+                  {n.type === 'ai' ? (
+                    <AiCard
+                      node={n}
+                      connectSource={connectSource}
+                      onConnectStart={setConnectSource}
+                      onConnectTo={handleConnectTo}
+                    />
+                  ) : n.type === 'note' ? (
+                    <NoteCard node={n} />
+                  ) : n.type === 'group' ? (
+                    <GroupCard node={n} />
+                  ) : (
+                    <ExcerptCard
+                      node={n}
+                      connectSource={connectSource}
+                      onConnectStart={setConnectSource}
+                      onConnectTo={handleConnectTo}
+                    />
+                  )}
+                </View>
+              ))}
+            </View>
+
+            <CollabCursors scale={tf.s} />
+          </Animated.View>
+        </Animated.View>
       </View>
 
-      {drawing && <View style={StyleSheet.absoluteFill} {...drawPan.panHandlers} />}
-
-      {nodes.length === 0 && ink.strokes.length === 0 && (
+      {nodes.length === 0 && ink.strokes.filter((st) => st.pdfPage == null).length === 0 && (
         <View style={s.emptyHint} pointerEvents="none">
+          <View style={s.emptyIcon}>
+            <Text style={s.emptyIconGlyph}>◎</Text>
+          </View>
+          <Text style={s.emptyTitle}>Canvas</Text>
           <Text style={s.emptyText}>
-            Send excerpts here from the reader, sketch with the pen tool, and link notes back to the
-            PDF.
+            Highlight passages in the reader — they land here as freeform cards. Pinch to zoom the
+            desk, drag cards with your finger, and draw with Apple Pencil.
           </Text>
         </View>
-      )}
-
-      {/* toolbar (hidden for read-only viewers in a live session) */}
-      {!viewerLocked && (
-      <View style={s.toolbar}>
-        <ToolBtn icon={Pen} active={drawMode} onPress={() => { setDrawMode((d) => !d); setEraseMode(false); }} p={p} />
-        <ToolBtn icon={Eraser} active={eraseMode} onPress={() => { setEraseMode((e) => !e); setDrawMode(false); }} p={p} />
-        <ToolBtn icon={Undo2} onPress={undoStroke} p={p} />
-        <TouchableOpacity
-          accessibilityLabel="Black ink"
-          style={[s.dot, { backgroundColor: p.ink1 }, inkColor === 0 && s.dotActive]}
-          onPress={() => setInkColor(0)}
-        />
-        <TouchableOpacity
-          accessibilityLabel="Accent ink"
-          style={[s.dot, { backgroundColor: p.ink2 }, inkColor === 1 && s.dotActive]}
-          onPress={() => setInkColor(1)}
-        />
-        <ToolBtn
-          icon={Link2}
-          active={linking.active}
-          onPress={() => (linking.active ? cancelLink() : startInkLink())}
-          p={p}
-        />
-        <ToolBtn icon={Maximize2} onPress={() => setTf({ s: 1, tx: 20, ty: 20 })} p={p} />
-      </View>
       )}
 
       {linking.active && (
@@ -323,7 +492,7 @@ export default function CanvasBoard() {
           <Text style={s.linkBannerText}>
             {linking.step === 'canvas'
               ? 'Tap a point on your handwriting'
-              : 'Switch to Reader tab, then tap a highlight / paragraph'}
+              : 'Tap a highlight or paragraph in the reader'}
           </Text>
           <TouchableOpacity onPress={cancelLink}>
             <Text style={s.linkCancel}>Cancel</Text>
@@ -334,59 +503,63 @@ export default function CanvasBoard() {
   );
 }
 
-function ToolBtn({
-  icon: Icon,
-  active,
-  onPress,
-  p,
-}: {
-  icon: React.ComponentType<any>;
-  active?: boolean;
-  onPress: () => void;
-  p: ReturnType<typeof getPalette>;
-}) {
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      style={{
-        width: 38,
-        height: 38,
-        borderRadius: 19,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: active ? p.accent : 'transparent',
-      }}>
-      <Icon size={18} color={active ? '#fff' : p.text} strokeWidth={2.1} />
-    </TouchableOpacity>
-  );
-}
-
 const EdgesLayer = React.memo(function EdgesLayer({
   edges,
   nodes,
   color,
+  labelColor,
 }: {
-  edges: Array<{ id: string; source: string; target: string }>;
+  edges: Edge[];
   nodes: Array<{ id: string; type?: string; x: number; y: number }>;
   color: string;
+  labelColor: string;
 }) {
   const center = (id: string) => {
     const n = nodes.find((x) => x.id === id);
     if (!n) return null;
-    const w = n.type === 'ai' ? AI_CARD_WIDTH : CARD_WIDTH;
+    const w = nodeWidth(n.type);
     return { x: n.x + w / 2, y: n.y + 50 };
   };
   return (
-    <Canvas style={{ width: BOARD, height: BOARD, position: 'absolute' }} pointerEvents="none">
+    <View style={{ width: BOARD, height: BOARD, position: 'absolute' }} pointerEvents="none">
+      <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
+        {edges.map((e) => {
+          const a = center(e.source);
+          const b = center(e.target);
+          if (!a || !b) return null;
+          const path = Skia.Path.MakeFromSVGString(`M ${a.x} ${a.y} L ${b.x} ${b.y}`);
+          if (!path) return null;
+          return <Path key={e.id} path={path} color={color} style="stroke" strokeWidth={2} />;
+        })}
+      </Canvas>
       {edges.map((e) => {
+        if (!e.label) return null;
         const a = center(e.source);
         const b = center(e.target);
         if (!a || !b) return null;
-        const path = Skia.Path.MakeFromSVGString(`M ${a.x} ${a.y} L ${b.x} ${b.y}`);
-        if (!path) return null;
-        return <Path key={e.id} path={path} color={color} style="stroke" strokeWidth={2} />;
+        const mx = (a.x + b.x) / 2;
+        const my = (a.y + b.y) / 2;
+        return (
+          <Text
+            key={`lbl-${e.id}`}
+            style={{
+              position: 'absolute',
+              left: mx - 50,
+              top: my - 14,
+              width: 100,
+              textAlign: 'center',
+              fontSize: 11,
+              fontWeight: '700',
+              color: labelColor,
+              backgroundColor: 'rgba(255,255,255,0.75)',
+              overflow: 'hidden',
+            }}
+            numberOfLines={1}>
+            {e.label}
+          </Text>
+        );
       })}
-    </Canvas>
+    </View>
   );
 });
 
@@ -401,7 +574,7 @@ const InkLayer = React.memo(function InkLayer({
 }) {
   return (
     <Canvas style={{ width: BOARD, height: BOARD, position: 'absolute' }} pointerEvents="none">
-      {ink.strokes.map((st) => (
+      {ink.strokes.filter((st) => st.pdfPage == null).map((st) => (
         <Path
           key={st.id}
           path={pointsToSvg(st.points)}
@@ -454,51 +627,61 @@ const DotGrid = React.memo(function DotGrid({
 
 const styles = (p: ReturnType<typeof getPalette>) =>
   StyleSheet.create({
-    root: { flex: 1, backgroundColor: p.bg, overflow: 'hidden' },
+    root: { flex: 1, backgroundColor: p.bg },
     board: { flex: 1, overflow: 'hidden' },
     emptyHint: {
       position: 'absolute',
-      top: 90,
-      left: 32,
-      right: 32,
-      padding: 18,
+      top: '28%',
+      left: 48,
+      right: 48,
+      padding: 28,
       borderRadius: RADIUS.lg,
-      borderWidth: 1.5,
-      borderColor: p.border,
-      borderStyle: 'dashed',
-      backgroundColor: p.surface,
-    },
-    emptyText: { color: p.textMuted, fontSize: 13, textAlign: 'center', lineHeight: 20, fontFamily: SERIF },
-    toolbar: {
-      position: 'absolute',
-      top: 12,
-      right: 12,
-      flexDirection: 'row',
+      backgroundColor: p.grouped,
       alignItems: 'center',
-      gap: 2,
-      paddingHorizontal: 8,
-      paddingVertical: 4,
-      borderRadius: RADIUS.pill,
-      backgroundColor: p.surface,
-      borderWidth: 1,
-      borderColor: p.border,
-      ...ELEVATION.float,
+      alignSelf: 'center',
+      maxWidth: 380,
+      ...ELEVATION.card,
     },
-    dot: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: p.border, alignSelf: 'center', marginHorizontal: 4 },
-    dotActive: { borderColor: p.text },
+    emptyIcon: {
+      width: 56,
+      height: 56,
+      borderRadius: 14,
+      backgroundColor: p.tintSoft,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginBottom: 14,
+    },
+    emptyIconGlyph: { fontSize: 24, color: p.tint },
+    emptyTitle: {
+      color: p.text,
+      fontSize: 22,
+      fontWeight: '700',
+      letterSpacing: 0.35,
+      marginBottom: 8,
+      textAlign: 'center',
+    },
+    emptyText: {
+      color: p.textMid,
+      fontSize: 15,
+      textAlign: 'center',
+      lineHeight: 21,
+      maxWidth: 320,
+    },
     linkBanner: {
       position: 'absolute',
-      bottom: 16,
+      bottom: 88,
       alignSelf: 'center',
       flexDirection: 'row',
       alignItems: 'center',
       gap: 12,
       paddingHorizontal: 16,
-      paddingVertical: 10,
+      paddingVertical: 12,
       borderRadius: RADIUS.pill,
-      backgroundColor: p.topbar,
+      backgroundColor: p.grouped,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: p.separator,
       ...ELEVATION.float,
     },
-    linkBannerText: { color: p.topbarText, fontSize: 12, maxWidth: 240 },
-    linkCancel: { color: p.accent, fontSize: 12, fontWeight: '700' },
+    linkBannerText: { color: p.text, fontSize: 14, maxWidth: 260 },
+    linkCancel: { color: p.tint, fontSize: 15, fontWeight: '600' },
   });

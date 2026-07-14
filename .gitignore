@@ -2,6 +2,9 @@
 #
 .DS_Store
 
+# Dependencies
+node_modules/
+
 # Xcode
 #
 build/
@@ -35,9 +38,9 @@ local.properties
 *.keystore
 !debug.keystore
 
-# node.js
-#
-node_modules/
+# Local AI keys (never commit)
+src/services/aiConfig.local.ts
+
 vendor/bundle/
 npm-debug.log
 yarn-error.log
@@ -74,3 +77,9 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Local secrets (Supabase / Google keys — never commit)
+src/services/supabaseConfig.local.ts
+.env
+.env.local
+supabase/.temp

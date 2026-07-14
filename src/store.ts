@@ -6,20 +6,38 @@ import {
   persistPdf,
   getSetting,
   setSetting,
+  migrateLegacyWorkspaceIfNeeded,
+  loadProjectIndex,
+  setActiveProject,
+  createProjectWorkspace,
+  deleteProjectWorkspace,
+  renameProjectMeta,
   type Persisted,
+  type ProjectMeta,
 } from './storage';
 import type { CategoryKey } from './theme';
 import type { ResearchResult } from './research/researchCore';
+import type { OcrPageData } from './services/ocrService';
 
 export type Rect = { x: number; y: number; w: number; h: number };
+
+export type MarkStyle = 'highlight' | 'underline' | 'strikethrough';
 
 export type Highlight = {
   id: string;
   page: number;
+  /** Union bounds used for navigation and compatibility with older workspaces. */
   rect: Rect;
+  /** Per-line OCR bounds so multi-line passages highlight text, not whitespace. */
+  rects?: Rect[];
   text: string;
   category: CategoryKey;
   note: string;
+  docId?: string;
+  /** Visual mark on the PDF (default highlight fill). */
+  markStyle?: MarkStyle;
+  /** Freeform tags for filtering / export. */
+  tags?: string[];
 };
 
 export type ExcerptData = {
@@ -29,25 +47,36 @@ export type ExcerptData = {
   note: string;
   highlightId: string;
   docName: string;
+  docId?: string;
+  tags?: string[];
 };
 
 export type AiData = { heading: string; body: string; citations: string[] };
+export type NoteData = { text: string };
+export type GroupData = { title: string };
 
 export type FlowNode = {
   id: string;
-  type: 'excerpt' | 'ai';
+  type: 'excerpt' | 'ai' | 'note' | 'group';
   x: number;
   y: number;
-  data: ExcerptData | AiData;
+  /** Freeform size — optional for legacy workspaces. */
+  w?: number;
+  h?: number;
+  /** Paint / stack order — higher draws on top. */
+  z?: number;
+  data: ExcerptData | AiData | NoteData | GroupData;
 };
 
-export type Edge = { id: string; source: string; target: string };
+export type Edge = { id: string; source: string; target: string; label?: string };
 
 export type Stroke = {
   id: string;
   color: number;
   width: number;
   points: Array<{ x: number; y: number }>;
+  /** When set, points are normalized 0–1 on this PDF page (not canvas board). */
+  pdfPage?: number;
 };
 
 export type InkLink = {
@@ -72,6 +101,7 @@ export type Linking = {
 
 export type OcrState = {
   pages: Record<number, string>;
+  layouts: Record<number, OcrPageData>;
   processingPage: number | null;
   scanning: boolean;
   scanProgress: { done: number; total: number } | null;
@@ -87,6 +117,8 @@ export type Bookmark = {
   page: number | null;
   date: string;
   order: number;
+  /** Nested court-index parent (same section). */
+  parentId?: string | null;
 };
 
 type ResearchState = {
@@ -103,13 +135,25 @@ function uid(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+export type LibraryDoc = { id: string; name: string; uri: string };
+
+export type DocBoard = { x: number; y: number; w: number; h: number };
+
+export const DEFAULT_DOC_BOARD: DocBoard = { x: 36, y: 36, w: 460, h: 640 };
+
 type StoreState = {
   hydrated: boolean;
+  view: 'library' | 'workspace';
+  projects: ProjectMeta[];
+  projectId: string | null;
+  projectTitle: string;
   autoOcr: boolean;
   setAutoOcr: (v: boolean) => void;
   clearInMemory: () => void;
   docName: string;
   docUri: string;
+  activeDocId: string;
+  library: LibraryDoc[];
   numPages: number;
   currentPage: number;
   highlights: Highlight[];
@@ -123,39 +167,71 @@ type StoreState = {
   research: ResearchState;
   ocr: OcrState;
   bookmarks: Bookmark[];
+  docBoard: DocBoard;
+  setDocBoard: (b: Partial<DocBoard>) => void;
 
   // absolute window geometry for cross-pane threads
   pdfFrame: { left: number; top: number; w: number; h: number } | null;
   canvasOrigin: { x: number; y: number };
   canvasTf: { s: number; tx: number; ty: number };
   canvasViewport: { w: number; h: number } | null;
+  nodeSizes: Record<string, { w: number; h: number }>;
+  /** Window-space anchor for excerpt citation badge (thread endpoint). */
+  nodeAnchors: Record<string, { x: number; y: number }>;
+  layoutEpoch: number;
   focusNodeId: string | null;
   setPdfFrame: (f: { left: number; top: number; w: number; h: number } | null) => void;
   setCanvasOrigin: (o: { x: number; y: number }) => void;
   setCanvasTf: (t: { s: number; tx: number; ty: number }) => void;
   setCanvasViewport: (v: { w: number; h: number } | null) => void;
+  setNodeSize: (id: string, size: { w: number; h: number }) => void;
+  setNodeAnchor: (id: string, anchor: { x: number; y: number }) => void;
+  bumpLayoutEpoch: () => void;
   requestFocusNode: (id: string) => void;
   clearFocusNode: () => void;
 
   hydrate: () => Promise<void>;
+  goToLibrary: () => Promise<void>;
+  createProject: (title: string) => Promise<void>;
+  openProject: (id: string) => Promise<void>;
+  renameProject: (id: string, title: string) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
   openPdf: (uri: string, name: string) => Promise<void>;
+  selectLibraryDoc: (id: string) => void;
   setDocMeta: (numPages: number) => void;
   setCurrentPage: (page: number) => void;
 
   addHighlight: (h: Omit<Highlight, 'id'>) => Highlight;
   removeHighlight: (id: string) => void;
+  /** Highlight + linked excerpt card; turns thread lines on when requested. */
+  createLinkedExcerpt: (
+    data: Omit<ExcerptData, 'highlightId'> & {
+      rect: Rect;
+      rects?: Rect[];
+      enableThreads?: boolean;
+      markStyle?: MarkStyle;
+      tags?: string[];
+    },
+  ) => { highlight: Highlight; node: FlowNode };
 
   nextDropPos: () => { x: number; y: number };
   addExcerptNode: (data: ExcerptData) => FlowNode;
   addAiNode: (data: AiData) => FlowNode;
+  addNoteNode: (text?: string) => FlowNode;
+  addGroupNode: (title?: string) => FlowNode;
+  updateNodeData: (id: string, data: Partial<ExcerptData | AiData | NoteData | GroupData>) => void;
   moveNode: (id: string, x: number, y: number) => void;
+  resizeNode: (id: string, w: number, h: number) => void;
+  bringNodeToFront: (id: string) => void;
   removeNode: (id: string) => void;
-  addEdge: (source: string, target: string) => void;
+  addEdge: (source: string, target: string, label?: string) => void;
+  updateEdge: (id: string, patch: Partial<Pick<Edge, 'label'>>) => void;
   removeEdge: (id: string) => void;
 
   addStroke: (stroke: Stroke) => void;
   undoStroke: () => void;
   eraseAt: (x: number, y: number, radius: number) => void;
+  eraseAtPdf: (page: number, nx: number, ny: number, radius: number) => void;
 
   startInkLink: () => void;
   setInkLinkPoint: (p: { x: number; y: number }) => void;
@@ -171,6 +247,7 @@ type StoreState = {
   setResearch: (patch: Partial<ResearchState>) => void;
 
   setOcrPageText: (page: number, text: string) => void;
+  setOcrPageData: (page: number, data: OcrPageData) => void;
   setOcrProcessingPage: (page: number | null) => void;
   setOcrScanning: (scanning: boolean, progress?: { done: number; total: number } | null) => void;
 
@@ -180,6 +257,17 @@ type StoreState = {
   reorderBookmarks: (section: BookmarkSectionKey, orderedIds: string[]) => void;
 
   resetWorkspace: () => Promise<void>;
+  /** Replace canvas layer from a shared project JSON (multi-device sync). */
+  importCanvasBundle: (bundle: {
+    highlights: Highlight[];
+    nodes: FlowNode[];
+    edges: Edge[];
+    ink: { strokes: Stroke[]; links: InkLink[] };
+    ocrPages?: Record<number, string>;
+    bookmarks: Bookmark[];
+    docName?: string;
+    numPages?: number;
+  }) => void;
 
   // Live collaboration: canvas state that syncs between peers (excludes the
   // device-local PDF file path + current page so each viewer keeps their reader).
@@ -202,80 +290,195 @@ function snapshot(s: StoreState): Persisted {
   return {
     docName: s.docName,
     docUri: s.docUri,
+    activeDocId: s.activeDocId,
     numPages: s.numPages,
+    library: s.library,
     highlights: s.highlights,
     nodes: s.nodes,
     edges: s.edges,
     ink: s.ink,
     ocrPages: s.ocr.pages,
+    ocrLayouts: s.ocr.layouts,
     bookmarks: s.bookmarks,
+    docBoard: s.docBoard,
+  };
+}
+
+const emptyWorkspace = {
+  docName: '',
+  docUri: '',
+  activeDocId: '',
+  library: [] as LibraryDoc[],
+  numPages: 0,
+  currentPage: 1,
+  highlights: [] as Highlight[],
+  nodes: [] as FlowNode[],
+  edges: [] as Edge[],
+  ink: { strokes: [] as Stroke[], links: [] as InkLink[] },
+  ocr: { pages: {} as Record<number, string>, layouts: {} as Record<number, OcrPageData>, processingPage: null as number | null, scanning: false, scanProgress: null as { done: number; total: number } | null },
+  bookmarks: [] as Bookmark[],
+  docBoard: { ...DEFAULT_DOC_BOARD },
+};
+
+function applyPersisted(data: Persisted) {
+  const lib =
+    data.library?.length
+      ? data.library
+      : data.docUri
+        ? [{ id: data.activeDocId || 'legacy', name: data.docName || 'Document', uri: data.docUri }]
+        : [];
+  const active = lib.find((d) => d.id === data.activeDocId) || lib.find((d) => d.uri === data.docUri) || lib[0];
+  return {
+    docName: data.docName || '',
+    docUri: data.docUri || '',
+    activeDocId: active?.id || '',
+    library: lib,
+    numPages: data.numPages || 0,
+    currentPage: 1,
+    highlights: data.highlights || [],
+    nodes: (data.nodes || []).filter((n: FlowNode) => n.type !== ('ink' as any)),
+    edges: data.edges || [],
+    ink: data.ink || { strokes: [], links: [] },
+    ocr: { pages: data.ocrPages || {}, layouts: data.ocrLayouts || {}, processingPage: null, scanning: false, scanProgress: null },
+    bookmarks: data.bookmarks || [],
+    docBoard: data.docBoard && data.docBoard.w > 100 ? data.docBoard : { ...DEFAULT_DOC_BOARD },
   };
 }
 
 export const useStore = create<StoreState>((set, get) => ({
   hydrated: false,
+  view: 'library',
+  projects: [],
+  projectId: null,
+  projectTitle: '',
   autoOcr: true,
-  docName: '',
-  docUri: '',
-  numPages: 0,
-  currentPage: 1,
-  highlights: [],
-  nodes: [],
-  edges: [],
-  ink: { strokes: [], links: [] },
+  ...emptyWorkspace,
   threadsOn: true,
   hoverNodeId: null,
   flashTarget: null,
   linking: { active: false, step: null, inkPoint: null },
   research: { status: 'idle', query: '', result: null, error: null, mode: 'offline' },
-  ocr: { pages: {}, processingPage: null, scanning: false, scanProgress: null },
-  bookmarks: [],
   pdfFrame: null,
   canvasOrigin: { x: 0, y: 0 },
   canvasTf: { s: 1, tx: 20, ty: 20 },
   canvasViewport: null,
+  nodeSizes: {},
+  nodeAnchors: {},
+  layoutEpoch: 0,
   focusNodeId: null,
 
   setPdfFrame: (f) => set({ pdfFrame: f }),
+  setDocBoard: (patch) => {
+    set((s) => ({ docBoard: { ...s.docBoard, ...patch } }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
   setCanvasOrigin: (o) => set({ canvasOrigin: o }),
   setCanvasTf: (t) => set({ canvasTf: t }),
   setCanvasViewport: (v) => set({ canvasViewport: v }),
+  setNodeSize: (id, size) =>
+    set((s) => {
+      const prev = s.nodeSizes[id];
+      if (prev?.w === size.w && prev?.h === size.h) return s;
+      return { nodeSizes: { ...s.nodeSizes, [id]: size } };
+    }),
+  setNodeAnchor: (id, anchor) =>
+    set((s) => {
+      const prev = s.nodeAnchors[id];
+      if (prev && prev.x === anchor.x && prev.y === anchor.y) return s;
+      return { nodeAnchors: { ...s.nodeAnchors, [id]: anchor } };
+    }),
+  bumpLayoutEpoch: () => set((s) => ({ layoutEpoch: s.layoutEpoch + 1 })),
   requestFocusNode: (id) => set({ focusNodeId: id }),
   clearFocusNode: () => set({ focusNodeId: null }),
 
   hydrate: async () => {
     const autoOcrRaw = await getSetting('autoOcr');
+    // Default ON for scanned PDFs (PRD OCR pipeline) unless user turned it off.
+    const index = await migrateLegacyWorkspaceIfNeeded();
+    set({
+      projects: index.projects,
+      projectId: null,
+      projectTitle: '',
+      view: 'library',
+      ...emptyWorkspace,
+      autoOcr: autoOcrRaw !== '0',
+      hydrated: true,
+    });
+  },
+
+  goToLibrary: async () => {
+    dropCounter = 0;
+    await setActiveProject(null);
+    const index = await loadProjectIndex();
+    set({
+      view: 'library',
+      projects: index.projects,
+      projectId: null,
+      projectTitle: '',
+      ...emptyWorkspace,
+      flashTarget: null,
+      linking: { active: false, step: null, inkPoint: null },
+    });
+  },
+
+  createProject: async (title) => {
+    const { meta, data } = await createProjectWorkspace(title);
+    await setActiveProject(meta.id);
+    const index = await loadProjectIndex();
+    dropCounter = 0;
+    set({
+      view: 'workspace',
+      projects: index.projects,
+      projectId: meta.id,
+      projectTitle: meta.title,
+      ...applyPersisted(data),
+      flashTarget: null,
+      linking: { active: false, step: null, inkPoint: null },
+    });
+  },
+
+  openProject: async (id) => {
+    await setActiveProject(id);
+    const index = await loadProjectIndex();
+    const meta = index.projects.find((p) => p.id === id);
     const data = await loadWorkspace();
-    if (data) {
-      set({
-        docName: data.docName || '',
-        docUri: data.docUri || '',
-        numPages: data.numPages || 0,
-        currentPage: 1,
-        highlights: data.highlights || [],
-        nodes: (data.nodes || []).filter((n: FlowNode) => n.type !== ('ink' as any)),
-        edges: data.edges || [],
-        ink: data.ink || { strokes: [], links: [] },
-        ocr: { pages: data.ocrPages || {}, processingPage: null, scanning: false, scanProgress: null },
-        bookmarks: data.bookmarks || [],
-      });
-    } else {
-      // No saved workspace for this user — start clean so nothing leaks across accounts.
+    const nodes = data ? (data.nodes || []).filter((n: any) => n.type !== 'ink') : [];
+    dropCounter = nodes.length;
+    set({
+      view: 'workspace',
+      projects: index.projects,
+      projectId: id,
+      projectTitle: meta?.title || 'Project',
+      ...(data ? applyPersisted(data) : emptyWorkspace),
+      flashTarget: null,
+      linking: { active: false, step: null, inkPoint: null },
+    });
+  },
+
+  renameProject: async (id, title) => {
+    await renameProjectMeta(id, title);
+    const index = await loadProjectIndex();
+    set({
+      projects: index.projects,
+      projectTitle: get().projectId === id ? title.trim() || get().projectTitle : get().projectTitle,
+    });
+  },
+
+  deleteProject: async (id) => {
+    await deleteProjectWorkspace(id);
+    const index = await loadProjectIndex();
+    if (get().projectId === id) {
       dropCounter = 0;
       set({
-        docName: '',
-        docUri: '',
-        numPages: 0,
-        currentPage: 1,
-        highlights: [],
-        nodes: [],
-        edges: [],
-        ink: { strokes: [], links: [] },
-        ocr: { pages: {}, processingPage: null, scanning: false, scanProgress: null },
-        bookmarks: [],
+        view: 'library',
+        projects: index.projects,
+        projectId: null,
+        projectTitle: '',
+        ...emptyWorkspace,
       });
+    } else {
+      set({ projects: index.projects });
     }
-    set({ autoOcr: autoOcrRaw !== '0', hydrated: true });
   },
 
   setAutoOcr: (v) => {
@@ -287,19 +490,14 @@ export const useStore = create<StoreState>((set, get) => ({
     dropCounter = 0;
     set({
       hydrated: false,
-      docName: '',
-      docUri: '',
-      numPages: 0,
-      currentPage: 1,
-      highlights: [],
-      nodes: [],
-      edges: [],
-      ink: { strokes: [], links: [] },
+      view: 'library',
+      projects: [],
+      projectId: null,
+      projectTitle: '',
+      ...emptyWorkspace,
       flashTarget: null,
       linking: { active: false, step: null, inkPoint: null },
       research: { status: 'idle', query: '', result: null, error: null, mode: 'offline' },
-      ocr: { pages: {}, processingPage: null, scanning: false, scanProgress: null },
-      bookmarks: [],
     });
   },
 
@@ -332,13 +530,44 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   openPdf: async (uri, name) => {
-    const stored = await persistPdf(uri, name);
+    const existing = get().library.find((d) => d.name === name);
+    const id = existing?.id || uid();
+    const stored = await persistPdf(uri, name, id);
+    set((s) => {
+      if (existing) {
+        return {
+          library: s.library.map((d) => (d.id === existing.id ? { ...d, uri: stored } : d)),
+          activeDocId: existing.id,
+          docName: name,
+          docUri: stored,
+          currentPage: 1,
+          ocr: { pages: {}, layouts: {}, processingPage: null, scanning: false, scanProgress: null },
+          bookmarks: [],
+        };
+      }
+      const entry: LibraryDoc = { id, name, uri: stored };
+      return {
+        library: [...s.library, entry],
+        activeDocId: id,
+        docName: name,
+        docUri: stored,
+        currentPage: 1,
+        ocr: { pages: {}, layouts: {}, processingPage: null, scanning: false, scanProgress: null },
+        bookmarks: [],
+      };
+    });
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  selectLibraryDoc: (id) => {
+    const doc = get().library.find((d) => d.id === id);
+    if (!doc) return;
     set({
-      docName: name,
-      docUri: stored,
+      activeDocId: doc.id,
+      docName: doc.name,
+      docUri: doc.uri,
       currentPage: 1,
-      ocr: { pages: {}, processingPage: null, scanning: false, scanProgress: null },
-      bookmarks: [],
+      ocr: { pages: {}, layouts: {}, processingPage: null, scanning: false, scanProgress: null },
     });
     saveWorkspaceDebounced(snapshot(get()));
   },
@@ -351,7 +580,11 @@ export const useStore = create<StoreState>((set, get) => ({
   setCurrentPage: (page) => set({ currentPage: page }),
 
   addHighlight: (h) => {
-    const highlight: Highlight = { id: uid(), ...h };
+    const highlight: Highlight = {
+      id: uid(),
+      ...h,
+      docId: h.docId || get().activeDocId || undefined,
+    };
     set((s) => ({ highlights: [...s.highlights, highlight] }));
     saveWorkspaceDebounced(snapshot(get()));
     return highlight;
@@ -362,16 +595,97 @@ export const useStore = create<StoreState>((set, get) => ({
     saveWorkspaceDebounced(snapshot(get()));
   },
 
+  createLinkedExcerpt: (data) => {
+    const docId = data.docId || get().activeDocId || undefined;
+    const tags = data.tags?.map((t) => t.trim()).filter(Boolean);
+    const highlight = get().addHighlight({
+      page: data.page,
+      rect: data.rect,
+      rects: data.rects,
+      text: data.text,
+      category: data.category,
+      note: data.note,
+      docId,
+      markStyle: data.markStyle || 'highlight',
+      tags,
+    });
+    const node = get().addExcerptNode({
+      text: data.text,
+      page: data.page,
+      category: data.category,
+      note: data.note,
+      highlightId: highlight.id,
+      docName: data.docName,
+      docId,
+      tags,
+    });
+    if (data.enableThreads !== false && !get().threadsOn) get().toggleThreads();
+    return { highlight, node };
+  },
+
   nextDropPos: () => {
-    const col = dropCounter % 3;
-    const row = Math.floor(dropCounter / 3);
+    const { nodes, canvasTf, canvasViewport } = get();
+    const CARD_W = 248;
+    const CARD_H = 160;
+    // Place into the *visible* board area so new OCR cards feel freeform, not grid-locked.
+    const vpW = canvasViewport?.w || 600;
+    const vpH = canvasViewport?.h || 700;
+    const s = Math.max(0.05, canvasTf.s);
+    const viewLeft = -canvasTf.tx / s;
+    const viewTop = -canvasTf.ty / s;
+    const viewW = vpW / s;
+    const viewH = vpH / s;
+    const margin = 36;
+    const baseX = viewLeft + margin + 24;
+    const baseY = viewTop + margin + 40;
+
+    const nodeW = (n: FlowNode) => n.w || CARD_W;
+    const nodeH = (n: FlowNode) => n.h || CARD_H;
+    const overlaps = (x: number, y: number, w = CARD_W, h = CARD_H) =>
+      nodes.some((n) => {
+        const ow = nodeW(n);
+        const oh = nodeH(n);
+        return !(x + w < n.x || n.x + ow < x || y + h < n.y || n.y + oh < y);
+      });
+
+    // Spiral / stagger from center of view — Freeform-style placement.
+    const cx = viewLeft + viewW * 0.55;
+    const cy = viewTop + viewH * 0.35;
+    const candidates: Array<{ x: number; y: number }> = [{ x: cx - CARD_W / 2, y: cy }];
+    for (let ring = 1; ring <= 8; ring++) {
+      const step = 28 + ring * 18;
+      candidates.push(
+        { x: cx - CARD_W / 2 + step, y: cy + step * 0.4 },
+        { x: cx - CARD_W / 2 - step, y: cy + step * 0.55 },
+        { x: cx - CARD_W / 2 + step * 0.3, y: cy + step },
+        { x: cx - CARD_W / 2 - step * 0.5, y: cy - step * 0.3 },
+        { x: baseX + (ring % 3) * (CARD_W + 20), y: baseY + Math.floor(ring / 3) * (CARD_H + 18) },
+      );
+    }
+    for (const c of candidates) {
+      const x = Math.max(16, c.x);
+      const y = Math.max(16, c.y);
+      if (!overlaps(x, y)) return { x, y };
+    }
     dropCounter += 1;
-    return { x: 40 + col * 250, y: 60 + row * 190 };
+    return {
+      x: Math.max(16, baseX + (dropCounter % 5) * 32),
+      y: Math.max(16, baseY + dropCounter * 28),
+    };
   },
 
   addExcerptNode: (data) => {
     const pos = get().nextDropPos();
-    const node: FlowNode = { id: uid(), type: 'excerpt', x: pos.x, y: pos.y, data };
+    const maxZ = get().nodes.reduce((m, n) => Math.max(m, n.z || 0), 0);
+    const node: FlowNode = {
+      id: uid(),
+      type: 'excerpt',
+      x: pos.x,
+      y: pos.y,
+      w: 248,
+      z: maxZ + 1,
+      data: { ...data, docId: data.docId || get().activeDocId || undefined },
+    };
     set((s) => ({ nodes: [...s.nodes, node] }));
     saveWorkspaceDebounced(snapshot(get()));
     return node;
@@ -379,30 +693,107 @@ export const useStore = create<StoreState>((set, get) => ({
 
   addAiNode: (data) => {
     const pos = get().nextDropPos();
-    const node: FlowNode = { id: uid(), type: 'ai', x: pos.x, y: pos.y, data };
+    const maxZ = get().nodes.reduce((m, n) => Math.max(m, n.z || 0), 0);
+    const node: FlowNode = { id: uid(), type: 'ai', x: pos.x, y: pos.y, w: 288, z: maxZ + 1, data };
     set((s) => ({ nodes: [...s.nodes, node] }));
     saveWorkspaceDebounced(snapshot(get()));
     return node;
   },
 
+  addNoteNode: (text = '') => {
+    const pos = get().nextDropPos();
+    const maxZ = get().nodes.reduce((m, n) => Math.max(m, n.z || 0), 0);
+    const node: FlowNode = {
+      id: uid(),
+      type: 'note',
+      x: pos.x,
+      y: pos.y,
+      w: 240,
+      z: maxZ + 1,
+      data: { text },
+    };
+    set((s) => ({ nodes: [...s.nodes, node] }));
+    saveWorkspaceDebounced(snapshot(get()));
+    return node;
+  },
+
+  addGroupNode: (title = 'Untitled section') => {
+    const pos = get().nextDropPos();
+    const maxZ = get().nodes.reduce((m, n) => Math.max(m, n.z || 0), 0);
+    const node: FlowNode = {
+      id: uid(),
+      type: 'group',
+      x: pos.x,
+      y: pos.y,
+      w: 280,
+      z: maxZ + 1,
+      data: { title },
+    };
+    set((s) => ({ nodes: [...s.nodes, node] }));
+    saveWorkspaceDebounced(snapshot(get()));
+    return node;
+  },
+
+  updateNodeData: (id, data) => {
+    set((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === id ? { ...n, data: { ...(n.data as object), ...data } as FlowNode['data'] } : n,
+      ),
+    }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
   moveNode: (id, x, y) => {
     set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? { ...n, x, y } : n)) }));
+    // Persist is debounced; avoid forcing a snapshot every pointer frame.
     saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  resizeNode: (id, w, h) => {
+    const nextW = Math.max(180, Math.min(520, w));
+    const nextH = Math.max(100, Math.min(720, h));
+    set((s) => ({
+      nodes: s.nodes.map((n) => (n.id === id ? { ...n, w: nextW, h: nextH } : n)),
+      nodeSizes: { ...s.nodeSizes, [id]: { w: nextW, h: nextH } },
+    }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  bringNodeToFront: (id) => {
+    set((s) => {
+      const maxZ = s.nodes.reduce((m, n) => Math.max(m, n.z || 0), 0);
+      const cur = s.nodes.find((n) => n.id === id);
+      if (!cur || (cur.z || 0) >= maxZ) return s;
+      return { nodes: s.nodes.map((n) => (n.id === id ? { ...n, z: maxZ + 1 } : n)) };
+    });
   },
 
   removeNode: (id) => {
     set((s) => ({
       nodes: s.nodes.filter((n) => n.id !== id),
       edges: s.edges.filter((e) => e.source !== id && e.target !== id),
+      nodeSizes: Object.fromEntries(Object.entries(s.nodeSizes).filter(([nodeId]) => nodeId !== id)),
+      nodeAnchors: Object.fromEntries(Object.entries(s.nodeAnchors).filter(([nodeId]) => nodeId !== id)),
     }));
     saveWorkspaceDebounced(snapshot(get()));
   },
 
-  addEdge: (source, target) => {
+  addEdge: (source, target, label) => {
     if (source === target) return;
     const exists = get().edges.some((e) => e.source === source && e.target === target);
     if (exists) return;
-    set((s) => ({ edges: [...s.edges, { id: uid(), source, target }] }));
+    set((s) => ({
+      edges: [...s.edges, { id: uid(), source, target, label: label?.trim() || undefined }],
+    }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  updateEdge: (id, patch) => {
+    set((s) => ({
+      edges: s.edges.map((e) =>
+        e.id === id ? { ...e, label: patch.label?.trim() || undefined } : e,
+      ),
+    }));
     saveWorkspaceDebounced(snapshot(get()));
   },
 
@@ -430,8 +821,29 @@ export const useStore = create<StoreState>((set, get) => ({
     };
     set((s) => ({
       ink: {
-        strokes: s.ink.strokes.filter((st) => !st.points.some((p) => near(p.x, p.y))),
+        strokes: s.ink.strokes.filter(
+          (st) => st.pdfPage != null || !st.points.some((p) => near(p.x, p.y)),
+        ),
         links: s.ink.links.filter((l) => !near(l.canvasPoint.x, l.canvasPoint.y)),
+      },
+    }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  eraseAtPdf: (page, nx, ny, radius) => {
+    const r2 = radius * radius;
+    const near = (px: number, py: number) => {
+      const dx = px - nx;
+      const dy = py - ny;
+      return dx * dx + dy * dy <= r2;
+    };
+    set((s) => ({
+      ink: {
+        ...s.ink,
+        strokes: s.ink.strokes.filter(
+          (st) =>
+            st.pdfPage !== page || !st.points.some((p) => near(p.x, p.y)),
+        ),
       },
     }));
     saveWorkspaceDebounced(snapshot(get()));
@@ -457,7 +869,11 @@ export const useStore = create<StoreState>((set, get) => ({
 
   jumpToHighlight: (id) => {
     const h = get().highlights.find((x) => x.id === id);
-    if (h) set({ flashTarget: { type: 'highlight', id, page: h.page }, currentPage: h.page });
+    if (!h) return;
+    if (h.docId && h.docId !== get().activeDocId) {
+      get().selectLibraryDoc(h.docId);
+    }
+    set({ flashTarget: { type: 'highlight', id, page: h.page }, currentPage: h.page });
   },
 
   jumpToPage: (page) => set({ flashTarget: { type: 'page', page }, currentPage: page }),
@@ -472,6 +888,18 @@ export const useStore = create<StoreState>((set, get) => ({
 
   setOcrPageText: (page, text) => {
     set((s) => ({ ocr: { ...s.ocr, pages: { ...s.ocr.pages, [page]: text }, processingPage: null } }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  setOcrPageData: (page, data) => {
+    set((s) => ({
+      ocr: {
+        ...s.ocr,
+        pages: { ...s.ocr.pages, [page]: data.text },
+        layouts: { ...s.ocr.layouts, [page]: data },
+        processingPage: null,
+      },
+    }));
     saveWorkspaceDebounced(snapshot(get()));
   },
 
@@ -494,7 +922,18 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   removeBookmark: (id) => {
-    set((s) => ({ bookmarks: s.bookmarks.filter((b) => b.id !== id) }));
+    const drop = new Set<string>([id]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const b of get().bookmarks) {
+        if (b.parentId && drop.has(b.parentId) && !drop.has(b.id)) {
+          drop.add(b.id);
+          grew = true;
+        }
+      }
+    }
+    set((s) => ({ bookmarks: s.bookmarks.filter((b) => !drop.has(b.id)) }));
     saveWorkspaceDebounced(snapshot(get()));
   },
 
@@ -513,19 +952,27 @@ export const useStore = create<StoreState>((set, get) => ({
     dropCounter = 0;
     await clearWorkspace();
     set({
-      docName: '',
-      docUri: '',
-      numPages: 0,
-      currentPage: 1,
-      highlights: [],
-      nodes: [],
-      edges: [],
-      ink: { strokes: [], links: [] },
+      ...emptyWorkspace,
       flashTarget: null,
       linking: { active: false, step: null, inkPoint: null },
       research: { status: 'idle', query: '', result: null, error: null, mode: 'offline' },
-      ocr: { pages: {}, processingPage: null, scanning: false, scanProgress: null },
-      bookmarks: [],
     });
+  },
+
+  importCanvasBundle: (bundle) => {
+    set((s) => ({
+      highlights: bundle.highlights || [],
+      nodes: bundle.nodes || [],
+      edges: bundle.edges || [],
+      ink: bundle.ink || { strokes: [], links: [] },
+      bookmarks: bundle.bookmarks || [],
+      ocr: {
+        ...s.ocr,
+        pages: bundle.ocrPages || s.ocr.pages,
+      },
+      docName: bundle.docName || s.docName,
+      numPages: bundle.numPages || s.numPages,
+    }));
+    saveWorkspaceDebounced(snapshot(get()));
   },
 }));

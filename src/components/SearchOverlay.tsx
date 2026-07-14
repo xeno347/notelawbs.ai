@@ -11,6 +11,9 @@ const KIND_LABEL: Record<SearchHitKind, string> = {
   excerpt: 'Canvas excerpt',
   ai: 'AI memo',
   ocr: 'Scanned page',
+  note: 'Note',
+  group: 'Section',
+  bookmark: 'Index',
 };
 
 function Snippet({ text, term, style, matchStyle }: { text: string; term: string; style: any; matchStyle: any }) {
@@ -33,6 +36,7 @@ export default function SearchOverlay({ onClose }: { onClose: () => void }) {
   const highlights = useStore((s) => s.highlights);
   const nodes = useStore((s) => s.nodes);
   const ocrPages = useStore((s) => s.ocr.pages);
+  const bookmarks = useStore((s) => s.bookmarks);
   const jumpToHighlight = useStore((s) => s.jumpToHighlight);
   const jumpToPage = useStore((s) => s.jumpToPage);
   const requestFocusNode = useStore((s) => s.requestFocusNode);
@@ -40,8 +44,8 @@ export default function SearchOverlay({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState('');
 
   const index = useMemo(
-    () => buildSearchIndex({ highlights, nodes, ocrPages }),
-    [highlights, nodes, ocrPages],
+    () => buildSearchIndex({ highlights, nodes, ocrPages, bookmarks }),
+    [highlights, nodes, ocrPages, bookmarks],
   );
   const results = useMemo(() => searchIndex(index, query), [index, query]);
   const firstTerm = query.trim().split(/\s+/)[0] || '';
@@ -50,7 +54,7 @@ export default function SearchOverlay({ onClose }: { onClose: () => void }) {
   const onPressHit = (hit: SearchResult) => {
     if (hit.highlightId) {
       jumpToHighlight(hit.highlightId);
-    } else if (hit.kind === 'ocr' && hit.page) {
+    } else if ((hit.kind === 'ocr' || hit.kind === 'bookmark') && hit.page) {
       jumpToPage(hit.page);
     } else if (hit.nodeId) {
       requestFocusNode(hit.nodeId);
@@ -78,7 +82,7 @@ export default function SearchOverlay({ onClose }: { onClose: () => void }) {
           <TextInput
             autoFocus
             style={s.input}
-            placeholder="Search highlights, notes, AI memos, scanned text…"
+            placeholder="Search highlights, notes, index, tags, OCR…"
             placeholderTextColor={p.textMuted}
             value={query}
             onChangeText={setQuery}
