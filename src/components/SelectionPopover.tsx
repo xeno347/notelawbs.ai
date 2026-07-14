@@ -7,7 +7,8 @@ import {
   StyleSheet,
   Modal,
 } from 'react-native';
-import { CATEGORIES, CATEGORY_KEYS, getPalette, SERIF, type CategoryKey } from '../theme';
+import { CATEGORIES, CATEGORY_KEYS, getPalette, useTheme, SERIF, RADIUS, ELEVATION, glow } from '../theme';
+import type { CategoryKey } from '../theme';
 
 export type PopoverSubmit = {
   text: string;
@@ -26,7 +27,7 @@ export default function SelectionPopover({
   onSubmit: (v: PopoverSubmit) => void;
   onCancel: () => void;
 }) {
-  const p = getPalette();
+  const p = useTheme();
   const [category, setCategory] = useState<CategoryKey>('key_fact');
   const [text, setText] = useState('');
   const [note, setNote] = useState('');
@@ -99,7 +100,7 @@ const styles = (p: ReturnType<typeof getPalette>) =>
   StyleSheet.create({
     overlay: {
       flex: 1,
-      backgroundColor: 'rgba(29,39,51,0.35)',
+      backgroundColor: p.overlay,
       justifyContent: 'center',
       alignItems: 'center',
       padding: 24,
@@ -108,15 +109,11 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       width: '100%',
       maxWidth: 380,
       backgroundColor: p.surface,
-      borderRadius: 14,
+      borderRadius: RADIUS.lg,
       padding: 16,
       borderWidth: 1,
       borderColor: p.border,
-      shadowColor: '#000',
-      shadowOpacity: 0.2,
-      shadowRadius: 16,
-      shadowOffset: { width: 0, height: 6 },
-      elevation: 8,
+      ...ELEVATION.popover,
     },
     swatchRow: { flexDirection: 'row', gap: 10, marginBottom: 6 },
     swatch: { width: 34, height: 34, borderRadius: 17, borderWidth: 2, borderColor: 'transparent' },
@@ -151,6 +148,13 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     actions: { flexDirection: 'row', gap: 8, alignItems: 'center' },
     cancelBtn: { paddingHorizontal: 14, paddingVertical: 11, borderRadius: 8, backgroundColor: p.surface2 },
     cancelText: { color: p.text },
-    submitBtn: { flex: 1, paddingVertical: 11, borderRadius: 8, backgroundColor: p.accent, alignItems: 'center' },
+    submitBtn: {
+      flex: 1,
+      paddingVertical: 11,
+      borderRadius: RADIUS.sm,
+      backgroundColor: p.accent,
+      alignItems: 'center',
+      ...glow(p.accentGlow, 0.55),
+    },
     submitText: { color: '#fff', fontWeight: '700' },
   });

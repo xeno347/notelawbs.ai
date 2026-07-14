@@ -57,5 +57,19 @@
 	<true/>
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<!-- Deep link for live-share invites: litnotes://join/<code>.
+	     For Google sign-in, add a second URL scheme with your reversed iOS
+	     client ID (see COLLABORATION_SETUP.md). -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>ai.litnotes.canvas</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>litnotes</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

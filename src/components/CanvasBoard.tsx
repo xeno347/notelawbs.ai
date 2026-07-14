@@ -8,10 +8,13 @@ import {
   LayoutRectangle,
 } from 'react-native';
 import { Canvas, Path, Circle, Skia, Points, vec } from '@shopify/react-native-skia';
+import { Pen, Eraser, Undo2, Link2, Maximize2 } from 'lucide-react-native';
 import { useStore, type Stroke } from '../store';
-import { getPalette, SERIF } from '../theme';
+import { useCollab, useViewerLocked } from '../collab/collabStore';
+import { getPalette, useTheme, SERIF, RADIUS, ELEVATION } from '../theme';
 import ExcerptCard, { CARD_WIDTH } from './ExcerptCard';
 import AiCard, { AI_CARD_WIDTH } from './AiCard';
+import CollabCursors from './CollabCursors';
 
 const BOARD = 6000;
 
@@ -29,7 +32,7 @@ function dist(t: any[]) {
 }
 
 export default function CanvasBoard() {
-  const p = getPalette();
+  const p = useTheme();
   const nodes = useStore((s) => s.nodes);
   const edges = useStore((s) => s.edges);
   const ink = useStore((s) => s.ink);
@@ -43,6 +46,12 @@ export default function CanvasBoard() {
   const addEdge = useStore((s) => s.addEdge);
   const setCanvasOrigin = useStore((s) => s.setCanvasOrigin);
   const setCanvasTf = useStore((s) => s.setCanvasTf);
+  const setCanvasViewport = useStore((s) => s.setCanvasViewport);
+  const focusNodeId = useStore((s) => s.focusNodeId);
+  const clearFocusNode = useStore((s) => s.clearFocusNode);
+  const setHoverNodeIdGlobal = useStore((s) => s.setHoverNodeId);
+  const sendCursor = useCollab((s) => s.sendCursor);
+  const viewerLocked = useViewerLocked();
   const boardRef = useRef<View>(null);
 
   const [container, setContainer] = useState<LayoutRectangle | null>(null);
@@ -59,6 +68,27 @@ export default function CanvasBoard() {
   useEffect(() => {
     setCanvasTf(tf);
   }, [tf, setCanvasTf]);
+
+  // Search / thread jumps land here: center the target node and flash it briefly.
+  useEffect(() => {
+    if (!focusNodeId || !container) return;
+    const n = nodes.find((x) => x.id === focusNodeId);
+    if (!n) {
+      clearFocusNode();
+      return;
+    }
+    const w = n.type === 'ai' ? AI_CARD_WIDTH : CARD_WIDTH;
+    const boardX = n.x + w / 2;
+    const boardY = n.y + 60;
+    setTf({ s: 1, tx: container.width / 2 - boardX, ty: container.height / 2 - boardY });
+    setHoverNodeIdGlobal(focusNodeId);
+    const t = setTimeout(() => {
+      setHoverNodeIdGlobal(null);
+      clearFocusNode();
+    }, 1600);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusNodeId, container]);
 
   const publishOrigin = () => {
     boardRef.current?.measureInWindow((x, y) => setCanvasOrigin({ x, y }));
@@ -109,10 +139,12 @@ export default function CanvasBoard() {
             setTf({ s, tx: f.x - boardFx * s, ty: f.y - boardFy * s });
           } else {
             setTf({ s: start.s, tx: start.tx + g.dx, ty: start.ty + g.dy });
+            const t0 = touches[0];
+            if (t0) sendCursor((t0.locationX - start.tx) / start.s, (t0.locationY - start.ty) / start.s);
           }
         },
       }),
-    [drawing],
+    [drawing, sendCursor],
   );
 
   // Draw / erase / link overlay (on top when active)
@@ -144,6 +176,7 @@ export default function CanvasBoard() {
         onPanResponderMove: (evt) => {
           const { locationX, locationY } = evt.nativeEvent;
           const bp = toBoard(locationX, locationY);
+          sendCursor(bp.x, bp.y);
           if (eraseMode) {
             eraseAt(bp.x, bp.y, 16 / tfRef.current.s);
             return;
@@ -160,7 +193,7 @@ export default function CanvasBoard() {
           setLiveStroke(null);
         },
       }),
-    [drawMode, eraseMode, inkColor, linking, setInkLinkPoint, eraseAt, addStroke],
+    [eraseMode, inkColor, linking, setInkLinkPoint, eraseAt, addStroke, sendCursor],
   );
 
   const inkColors = useMemo(() => [p.ink1, p.ink2], [p.ink1, p.ink2]);
@@ -176,7 +209,13 @@ export default function CanvasBoard() {
   const s = styles(p);
 
   return (
-    <View style={s.root} onLayout={(e) => { setContainer(e.nativeEvent.layout); publishOrigin(); }}>
+    <View
+      style={s.root}
+      onLayout={(e) => {
+        setContainer(e.nativeEvent.layout);
+        setCanvasViewport({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height });
+        publishOrigin();
+      }}>
       {container && <DotGrid width={container.width} height={container.height} tf={tf} color={p.dotGrid} />}
       <View ref={boardRef} style={s.board} onLayout={publishOrigin} {...boardPan.panHandlers}>
         <View
@@ -211,27 +250,34 @@ export default function CanvasBoard() {
           )}
 
           {/* cards */}
-          {nodes.map((n) =>
-            n.type === 'ai' ? (
-              <AiCard
-                key={n.id}
-                node={n}
-                scale={tf.s}
-                connectSource={connectSource}
-                onConnectStart={setConnectSource}
-                onConnectTo={handleConnectTo}
-              />
-            ) : (
-              <ExcerptCard
-                key={n.id}
-                node={n}
-                scale={tf.s}
-                connectSource={connectSource}
-                onConnectStart={setConnectSource}
-                onConnectTo={handleConnectTo}
-              />
-            ),
-          )}
+          <View
+            style={StyleSheet.absoluteFill}
+            pointerEvents={viewerLocked ? 'none' : 'box-none'}>
+            {nodes.map((n) =>
+              n.type === 'ai' ? (
+                <AiCard
+                  key={n.id}
+                  node={n}
+                  scale={tf.s}
+                  connectSource={connectSource}
+                  onConnectStart={setConnectSource}
+                  onConnectTo={handleConnectTo}
+                />
+              ) : (
+                <ExcerptCard
+                  key={n.id}
+                  node={n}
+                  scale={tf.s}
+                  connectSource={connectSource}
+                  onConnectStart={setConnectSource}
+                  onConnectTo={handleConnectTo}
+                />
+              ),
+            )}
+          </View>
+
+          {/* live peer cursors */}
+          <CollabCursors scale={tf.s} />
         </View>
       </View>
 
@@ -240,32 +286,37 @@ export default function CanvasBoard() {
       {nodes.length === 0 && ink.strokes.length === 0 && (
         <View style={s.emptyHint} pointerEvents="none">
           <Text style={s.emptyText}>
-            Send excerpts here from the reader, draw with ✎, and link notes back to the PDF.
+            Send excerpts here from the reader, sketch with the pen tool, and link notes back to the
+            PDF.
           </Text>
         </View>
       )}
 
-      {/* toolbar */}
+      {/* toolbar (hidden for read-only viewers in a live session) */}
+      {!viewerLocked && (
       <View style={s.toolbar}>
-        <ToolBtn label="✎" active={drawMode} onPress={() => { setDrawMode((d) => !d); setEraseMode(false); }} p={p} />
-        <ToolBtn label="◌" active={eraseMode} onPress={() => { setEraseMode((e) => !e); setDrawMode(false); }} p={p} />
-        <ToolBtn label="↩" onPress={undoStroke} p={p} />
+        <ToolBtn icon={Pen} active={drawMode} onPress={() => { setDrawMode((d) => !d); setEraseMode(false); }} p={p} />
+        <ToolBtn icon={Eraser} active={eraseMode} onPress={() => { setEraseMode((e) => !e); setDrawMode(false); }} p={p} />
+        <ToolBtn icon={Undo2} onPress={undoStroke} p={p} />
         <TouchableOpacity
+          accessibilityLabel="Black ink"
           style={[s.dot, { backgroundColor: p.ink1 }, inkColor === 0 && s.dotActive]}
           onPress={() => setInkColor(0)}
         />
         <TouchableOpacity
+          accessibilityLabel="Accent ink"
           style={[s.dot, { backgroundColor: p.ink2 }, inkColor === 1 && s.dotActive]}
           onPress={() => setInkColor(1)}
         />
         <ToolBtn
-          label="⚯"
+          icon={Link2}
           active={linking.active}
           onPress={() => (linking.active ? cancelLink() : startInkLink())}
           p={p}
         />
-        <ToolBtn label="⤢" onPress={() => setTf({ s: 1, tx: 20, ty: 20 })} p={p} />
+        <ToolBtn icon={Maximize2} onPress={() => setTf({ s: 1, tx: 20, ty: 20 })} p={p} />
       </View>
+      )}
 
       {linking.active && (
         <View style={s.linkBanner}>
@@ -284,12 +335,12 @@ export default function CanvasBoard() {
 }
 
 function ToolBtn({
-  label,
+  icon: Icon,
   active,
   onPress,
   p,
 }: {
-  label: string;
+  icon: React.ComponentType<any>;
   active?: boolean;
   onPress: () => void;
   p: ReturnType<typeof getPalette>;
@@ -305,7 +356,7 @@ function ToolBtn({
         justifyContent: 'center',
         backgroundColor: active ? p.accent : 'transparent',
       }}>
-      <Text style={{ fontSize: 17, color: active ? '#fff' : p.text }}>{label}</Text>
+      <Icon size={18} color={active ? '#fff' : p.text} strokeWidth={2.1} />
     </TouchableOpacity>
   );
 }
@@ -411,7 +462,7 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       left: 32,
       right: 32,
       padding: 18,
-      borderRadius: 12,
+      borderRadius: RADIUS.lg,
       borderWidth: 1.5,
       borderColor: p.border,
       borderStyle: 'dashed',
@@ -427,15 +478,11 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       gap: 2,
       paddingHorizontal: 8,
       paddingVertical: 4,
-      borderRadius: 24,
+      borderRadius: RADIUS.pill,
       backgroundColor: p.surface,
       borderWidth: 1,
       borderColor: p.border,
-      shadowColor: '#000',
-      shadowOpacity: 0.15,
-      shadowRadius: 8,
-      shadowOffset: { width: 0, height: 2 },
-      elevation: 4,
+      ...ELEVATION.float,
     },
     dot: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: p.border, alignSelf: 'center', marginHorizontal: 4 },
     dotActive: { borderColor: p.text },
@@ -448,8 +495,9 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       gap: 12,
       paddingHorizontal: 16,
       paddingVertical: 10,
-      borderRadius: 22,
+      borderRadius: RADIUS.pill,
       backgroundColor: p.topbar,
+      ...ELEVATION.float,
     },
     linkBannerText: { color: p.topbarText, fontSize: 12, maxWidth: 240 },
     linkCancel: { color: p.accent, fontSize: 12, fontWeight: '700' },

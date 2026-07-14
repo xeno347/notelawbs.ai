@@ -6,15 +6,50 @@ import {
   StyleSheet,
   PanResponder,
   LayoutRectangle,
+  Animated,
+  Easing,
 } from 'react-native';
 import Pdf from 'react-native-pdf';
 import DocumentPicker from 'react-native-document-picker';
+import { FolderOpen, Highlighter, ScanText, ChevronLeft, ChevronRight } from 'lucide-react-native';
 import { useStore, type Rect } from '../store';
-import { catStyle, getPalette, SERIF } from '../theme';
+import { useViewerLocked } from '../collab/collabStore';
+import { catStyle, getPalette, useTheme, SERIF, RADIUS, ELEVATION, glow } from '../theme';
 import SelectionPopover, { type PopoverSubmit } from './SelectionPopover';
+import { recognizePageText } from '../services/ocrService';
+
+function ScanSweep({ color }: { color: string }) {
+  const y = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(y, { toValue: 1, duration: 1400, easing: Easing.linear, useNativeDriver: true }),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [y]);
+  return (
+    <View style={StyleSheet.absoluteFill} pointerEvents="none">
+      <Animated.View
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          height: 48,
+          backgroundColor: color,
+          opacity: 0.5,
+          transform: [
+            {
+              translateY: y.interpolate({ inputRange: [0, 1], outputRange: [-48, 900] }),
+            },
+          ],
+        }}
+      />
+    </View>
+  );
+}
 
 export default function PdfReader() {
-  const p = getPalette();
+  const p = useTheme();
   const docUri = useStore((s) => s.docUri);
   const docName = useStore((s) => s.docName);
   const numPages = useStore((s) => s.numPages);
@@ -22,6 +57,8 @@ export default function PdfReader() {
   const highlights = useStore((s) => s.highlights);
   const flashTarget = useStore((s) => s.flashTarget);
   const linking = useStore((s) => s.linking);
+  const ocr = useStore((s) => s.ocr);
+  const autoOcr = useStore((s) => s.autoOcr);
 
   const openPdf = useStore((s) => s.openPdf);
   const setDocMeta = useStore((s) => s.setDocMeta);
@@ -30,13 +67,79 @@ export default function PdfReader() {
   const addExcerptNode = useStore((s) => s.addExcerptNode);
   const clearFlash = useStore((s) => s.clearFlash);
   const completeLink = useStore((s) => s.completeLink);
+  const setOcrPageText = useStore((s) => s.setOcrPageText);
+  const setOcrProcessingPage = useStore((s) => s.setOcrProcessingPage);
+  const setOcrScanning = useStore((s) => s.setOcrScanning);
 
   const [container, setContainer] = useState<LayoutRectangle | null>(null);
   const [aspect, setAspect] = useState(0.72);
   const [highlightMode, setHighlightMode] = useState(false);
+  const viewerLocked = useViewerLocked();
   const [draft, setDraft] = useState<Rect | null>(null);
   const [popover, setPopover] = useState<{ rect: Rect; page: number } | null>(null);
   const startRef = useRef<{ x: number; y: number } | null>(null);
+  const pdfCaptureRef = useRef<View>(null);
+  const pageWaiters = useRef<Map<number, () => void>>(new Map());
+  const scanCancelRef = useRef(false);
+
+  const waitForPageRender = (page: number, timeoutMs = 2500) =>
+    new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        pageWaiters.current.delete(page);
+        resolve();
+      };
+      pageWaiters.current.set(page, finish);
+      setTimeout(finish, timeoutMs);
+    });
+
+  // Auto-OCR the page the user is dwelling on, so it becomes searchable without
+  // requiring a full-document scan. Skipped while a bulk scan is already running.
+  useEffect(() => {
+    if (!docUri || ocr.scanning || !autoOcr) return;
+    if (ocr.pages[currentPage] || ocr.processingPage === currentPage) return;
+    const t = setTimeout(async () => {
+      setOcrProcessingPage(currentPage);
+      try {
+        const text = await recognizePageText(pdfCaptureRef);
+        setOcrPageText(currentPage, text);
+      } catch {
+        setOcrProcessingPage(null);
+      }
+    }, 900);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docUri, currentPage, ocr.scanning, autoOcr]);
+
+  const scanDocument = async () => {
+    const total = useStore.getState().numPages;
+    if (!total) return;
+    scanCancelRef.current = false;
+    setOcrScanning(true, { done: 0, total });
+    for (let pg = 1; pg <= total; pg++) {
+      if (scanCancelRef.current) break;
+      if (!useStore.getState().ocr.pages[pg]) {
+        setCurrentPage(pg);
+        await waitForPageRender(pg);
+        await new Promise((r) => setTimeout(r, 350));
+        try {
+          const text = await recognizePageText(pdfCaptureRef);
+          setOcrPageText(pg, text);
+        } catch {
+          // leave this page uncached — "Scan document" can be re-run later
+        }
+      }
+      setOcrScanning(true, { done: pg, total });
+    }
+    setOcrScanning(false);
+  };
+
+  const cancelScan = () => {
+    scanCancelRef.current = true;
+    setOcrScanning(false);
+  };
 
   const frame = useMemo(() => {
     if (!container) return null;
@@ -185,7 +288,8 @@ export default function PdfReader() {
     <View style={s.root}>
       <View style={s.toolbar}>
         <TouchableOpacity style={s.openBtn} onPress={openDoc}>
-          <Text style={s.openText}>Open PDF</Text>
+          <FolderOpen size={15} color="#fff" strokeWidth={2.2} />
+          <Text style={s.openText}>Open</Text>
         </TouchableOpacity>
         {!!docName && (
           <Text style={s.docInfo} numberOfLines={1}>
@@ -193,13 +297,27 @@ export default function PdfReader() {
           </Text>
         )}
         <TouchableOpacity
-          style={[s.hlBtn, highlightMode && s.hlBtnActive]}
+          style={[s.hlBtn, highlightMode && s.hlBtnActive, viewerLocked && { opacity: 0.4 }]}
           onPress={() => setHighlightMode((m) => !m)}
-          disabled={!docUri}>
+          disabled={!docUri || viewerLocked}>
+          <Highlighter size={15} color={highlightMode ? p.accent : p.text} strokeWidth={2.1} />
           <Text style={[s.hlText, highlightMode && s.hlTextActive]}>
-            {highlightMode ? 'Drawing…' : '＋ Highlight'}
+            {highlightMode ? 'Drawing…' : 'Highlight'}
           </Text>
         </TouchableOpacity>
+        {!!docUri && !ocr.scanning && (
+          <TouchableOpacity style={s.hlBtn} onPress={scanDocument}>
+            <ScanText size={15} color={p.text} strokeWidth={2.1} />
+            <Text style={s.hlText}>Scan</Text>
+          </TouchableOpacity>
+        )}
+        {ocr.scanning && ocr.scanProgress && (
+          <TouchableOpacity style={[s.hlBtn, s.hlBtnActive]} onPress={cancelScan}>
+            <Text style={[s.hlText, s.hlTextActive]}>
+              Scanning {ocr.scanProgress.done}/{ocr.scanProgress.total} · cancel
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       <View
@@ -217,26 +335,35 @@ export default function PdfReader() {
                   s.frame,
                   { width: frame.w, height: frame.h, left: frame.left, top: frame.top },
                 ]}>
-                <Pdf
-                  source={{ uri: docUri }}
-                  page={currentPage}
-                  singlePage
-                  fitPolicy={0}
-                  scale={1}
-                  minScale={1}
-                  maxScale={3}
-                  spacing={0}
-                  enablePaging
-                  style={s.pdf}
-                  onLoadComplete={(pages, _fp, dims) => {
-                    setDocMeta(pages);
-                    if (dims?.width && dims?.height) {
-                      setAspect(dims.width / dims.height);
-                    }
-                  }}
-                  onPageChanged={(page) => setCurrentPage(page)}
-                  onError={() => {}}
-                />
+                <View ref={pdfCaptureRef} collapsable={false} style={StyleSheet.absoluteFill}>
+                  <Pdf
+                    source={{ uri: docUri }}
+                    page={currentPage}
+                    singlePage
+                    fitPolicy={0}
+                    scale={1}
+                    minScale={1}
+                    maxScale={3}
+                    spacing={0}
+                    enablePaging
+                    style={s.pdf}
+                    onLoadComplete={(pages, _fp, dims) => {
+                      setDocMeta(pages);
+                      if (dims?.width && dims?.height) {
+                        setAspect(dims.width / dims.height);
+                      }
+                    }}
+                    onPageChanged={(page) => {
+                      setCurrentPage(page);
+                      pageWaiters.current.get(page)?.();
+                    }}
+                    onError={() => {}}
+                  />
+                </View>
+
+                {(ocr.processingPage === currentPage || (ocr.scanning && ocr.scanProgress && ocr.scanProgress.done + 1 === currentPage)) && (
+                  <ScanSweep color={p.scanline} />
+                )}
 
                 {/* highlight rects for current page */}
                 <View style={StyleSheet.absoluteFill} pointerEvents="none">
@@ -305,17 +432,19 @@ export default function PdfReader() {
       {!!docUri && (
         <View style={s.pager}>
           <TouchableOpacity
+            accessibilityLabel="Previous page"
             style={s.pageBtn}
             onPress={() => setCurrentPage(Math.max(1, currentPage - 1))}>
-            <Text style={s.pageBtnText}>‹</Text>
+            <ChevronLeft size={20} color={p.text} strokeWidth={2.2} />
           </TouchableOpacity>
           <Text style={s.pageLabel}>
             p. {currentPage} / {numPages || '—'}
           </Text>
           <TouchableOpacity
+            accessibilityLabel="Next page"
             style={s.pageBtn}
             onPress={() => setCurrentPage(Math.min(numPages || currentPage + 1, currentPage + 1))}>
-            <Text style={s.pageBtnText}>›</Text>
+            <ChevronRight size={20} color={p.text} strokeWidth={2.2} />
           </TouchableOpacity>
         </View>
       )}
@@ -361,15 +490,27 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       borderBottomWidth: 1,
       borderBottomColor: p.border,
     },
-    openBtn: { backgroundColor: p.accent, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 },
-    openText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+    openBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      backgroundColor: p.accent,
+      borderRadius: RADIUS.sm,
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      ...glow(p.accentGlow, 0.5),
+    },
+    openText: { color: '#fff', fontSize: 13, fontWeight: '700' },
     docInfo: { flex: 1, fontSize: 12.5, color: p.textMid, fontWeight: '600' },
     hlBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
       borderWidth: 1,
       borderColor: p.border,
-      borderRadius: 8,
+      borderRadius: RADIUS.sm,
       paddingHorizontal: 12,
-      paddingVertical: 6,
+      paddingVertical: 7,
     },
     hlBtnActive: { backgroundColor: p.accentSoft, borderColor: p.accent },
     hlText: { fontSize: 13, color: p.text },
@@ -379,32 +520,30 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       position: 'absolute',
       backgroundColor: p.pdfPage,
       overflow: 'hidden',
-      shadowColor: '#000',
-      shadowOpacity: 0.14,
-      shadowRadius: 10,
-      shadowOffset: { width: 0, height: 4 },
-      elevation: 4,
+      ...ELEVATION.card,
     },
     pdf: { flex: 1, backgroundColor: p.pdfPage },
     empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 28 },
     emptyCard: {
       backgroundColor: p.surface,
-      borderRadius: 14,
+      borderRadius: RADIUS.lg,
       borderWidth: 1,
       borderColor: p.border,
       padding: 24,
       alignItems: 'center',
       maxWidth: 340,
-      shadowColor: '#000',
-      shadowOpacity: 0.1,
-      shadowRadius: 12,
-      shadowOffset: { width: 0, height: 4 },
-      elevation: 3,
+      ...ELEVATION.card,
     },
     spineMark: { width: 6, height: 30, borderRadius: 2, backgroundColor: p.accent, marginBottom: 14 },
     emptyHeading: { fontSize: 20, fontWeight: '700', color: p.text, fontFamily: SERIF, marginBottom: 8 },
     emptyText: { color: p.textMuted, fontSize: 14, textAlign: 'center', lineHeight: 21, fontFamily: SERIF, marginBottom: 16 },
-    emptyBtn: { backgroundColor: p.accent, borderRadius: 8, paddingHorizontal: 20, paddingVertical: 10 },
+    emptyBtn: {
+      backgroundColor: p.accent,
+      borderRadius: RADIUS.sm,
+      paddingHorizontal: 20,
+      paddingVertical: 10,
+      ...glow(p.accentGlow, 0.5),
+    },
     emptyBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
     pager: {
       flexDirection: 'row',

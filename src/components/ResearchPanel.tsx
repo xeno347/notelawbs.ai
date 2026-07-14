@@ -10,8 +10,10 @@ import {
   Easing,
   Modal,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BlurView } from '@react-native-community/blur';
 import { useStore } from '../store';
-import { getPalette, SERIF } from '../theme';
+import { getPalette, useTheme, SERIF, RADIUS, ELEVATION, glow } from '../theme';
 import {
   runResearch,
   getStoredKey,
@@ -41,7 +43,8 @@ function PulseDot({ color, active }: { color: string; active: boolean }) {
 }
 
 export default function ResearchPanel({ onClose }: { onClose: () => void }) {
-  const p = getPalette();
+  const p = useTheme();
+  const insets = useSafeAreaInsets();
   const research = useStore((s) => s.research);
   const setResearch = useStore((s) => s.setResearch);
   const addAiNode = useStore((s) => s.addAiNode);
@@ -107,11 +110,14 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
     <Modal animationType="slide" transparent onRequestClose={onClose}>
       <View style={s.backdrop}>
         <View style={s.panel}>
-          <View style={s.header}>
+          <BlurView style={StyleSheet.absoluteFill} blurType={p.blurType} blurAmount={26} reducedTransparencyFallbackColor={p.bg} />
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: p.glassTint }]} />
+
+          <View style={[s.header, { paddingTop: insets.top + 18 }]}>
             <View>
               <Text style={s.title}>Legal research</Text>
               <View style={[s.badge, mode === 'live' ? s.badgeLive : s.badgeOffline]}>
-                <Text style={[s.badgeText, { color: mode === 'live' ? '#3F7A54' : '#B07A16' }]}>
+                <Text style={[s.badgeText, { color: mode === 'live' ? p.success : p.warning }]}>
                   {mode === 'live' ? 'LIVE' : 'OFFLINE'}
                 </Text>
               </View>
@@ -238,63 +244,67 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
 
 const styles = (p: ReturnType<typeof getPalette>) =>
   StyleSheet.create({
-    backdrop: { flex: 1, flexDirection: 'row', justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.25)' },
+    backdrop: { flex: 1, flexDirection: 'row', justifyContent: 'flex-end', backgroundColor: p.overlay },
     panel: {
       width: '86%',
       maxWidth: 440,
-      backgroundColor: p.bg,
-      shadowColor: '#000',
-      shadowOpacity: 0.25,
-      shadowRadius: 16,
-      shadowOffset: { width: -4, height: 0 },
+      overflow: 'hidden',
+      borderLeftWidth: 1,
+      borderLeftColor: p.border,
+      ...ELEVATION.panel,
     },
     header: {
       flexDirection: 'row',
       alignItems: 'flex-start',
       justifyContent: 'space-between',
       paddingHorizontal: 18,
-      paddingTop: 52,
       paddingBottom: 14,
       borderBottomWidth: 1,
       borderBottomColor: p.border,
-      backgroundColor: p.surface,
     },
     title: { fontSize: 20, fontWeight: '700', color: p.text, fontFamily: SERIF },
-    badge: { alignSelf: 'flex-start', marginTop: 4, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
-    badgeLive: { backgroundColor: 'rgba(63,122,84,0.16)' },
-    badgeOffline: { backgroundColor: 'rgba(199,154,40,0.18)' },
+    badge: { alignSelf: 'flex-start', marginTop: 4, paddingHorizontal: 8, paddingVertical: 2, borderRadius: RADIUS.sm },
+    badgeLive: { backgroundColor: p.successSoft },
+    badgeOffline: { backgroundColor: p.warningSoft },
     badgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 1 },
-    closeBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 7, borderWidth: 1, borderColor: p.border },
+    closeBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: RADIUS.sm, borderWidth: 1, borderColor: p.border },
     closeText: { color: p.text, fontSize: 13 },
     body: { flex: 1 },
     bodyContent: { padding: 18 },
     queryInput: {
       borderWidth: 1,
-      borderColor: p.border,
-      borderRadius: 10,
+      borderColor: p.borderStrong,
+      borderRadius: RADIUS.md,
       padding: 12,
       minHeight: 76,
       color: p.text,
-      backgroundColor: p.surface,
+      backgroundColor: p.surfaceGlass,
       fontSize: 15,
       fontFamily: SERIF,
       textAlignVertical: 'top',
       marginBottom: 10,
     },
-    runBtn: { backgroundColor: p.accent, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginBottom: 16 },
+    runBtn: {
+      backgroundColor: p.accent,
+      borderRadius: RADIUS.md,
+      paddingVertical: 12,
+      alignItems: 'center',
+      marginBottom: 16,
+      ...glow(p.accentGlow, 0.6),
+    },
     runText: { color: '#fff', fontWeight: '700', fontSize: 14 },
     stages: { marginBottom: 16, gap: 10 },
     stageRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
     stageLabel: { fontSize: 13, color: p.textMuted },
-    keyBox: { backgroundColor: p.surface, borderWidth: 1, borderColor: p.border, borderRadius: 10, padding: 14, marginBottom: 16 },
+    keyBox: { backgroundColor: p.surfaceGlass, borderWidth: 1, borderColor: p.border, borderRadius: RADIUS.md, padding: 14, marginBottom: 16 },
     keyTitle: { fontSize: 14, fontWeight: '700', color: p.text, marginBottom: 6 },
     keyHint: { fontSize: 12, color: p.textMuted, marginBottom: 10, lineHeight: 17 },
-    keyInput: { borderWidth: 1, borderColor: p.border, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 9, color: p.text, backgroundColor: p.bg, marginBottom: 10 },
-    keyBtn: { backgroundColor: p.text, borderRadius: 8, paddingVertical: 9, alignItems: 'center' },
+    keyInput: { borderWidth: 1, borderColor: p.borderStrong, borderRadius: RADIUS.sm, paddingHorizontal: 10, paddingVertical: 9, color: p.text, backgroundColor: p.surface2, marginBottom: 10 },
+    keyBtn: { backgroundColor: p.text, borderRadius: RADIUS.sm, paddingVertical: 9, alignItems: 'center' },
     keyBtnText: { color: p.surface, fontWeight: '700' },
     keyStatus: { fontSize: 12, color: p.textMuted, marginTop: 8 },
     errorText: { fontSize: 13, color: p.accent, marginBottom: 12 },
-    memo: { backgroundColor: p.surface, borderWidth: 1, borderColor: p.border, borderRadius: 12, padding: 18 },
+    memo: { backgroundColor: p.surfaceGlass, borderWidth: 1, borderColor: p.border, borderRadius: RADIUS.lg, padding: 18 },
     memoTitle: { fontSize: 18, fontWeight: '700', color: p.text, fontFamily: SERIF, marginBottom: 12, textAlign: 'center' },
     enhancedBox: { backgroundColor: p.bg2, borderRadius: 8, padding: 10, marginBottom: 12 },
     enhancedLabel: { fontSize: 10, fontWeight: '800', letterSpacing: 0.6, color: p.textMuted, marginBottom: 3 },

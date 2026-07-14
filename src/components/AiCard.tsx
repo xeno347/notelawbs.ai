@@ -1,7 +1,8 @@
 import React, { useMemo, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, PanResponder } from 'react-native';
+import { X, Link2 } from 'lucide-react-native';
 import { useStore, type FlowNode, type AiData } from '../store';
-import { getPalette, SERIF } from '../theme';
+import { getPalette, useTheme, SERIF, RADIUS, ELEVATION } from '../theme';
 
 export const AI_CARD_WIDTH = 288;
 
@@ -18,7 +19,7 @@ function AiCard({
   onConnectStart: (id: string) => void;
   onConnectTo: (id: string) => void;
 }) {
-  const p = getPalette();
+  const p = useTheme();
   const moveNode = useStore((s) => s.moveNode);
   const removeNode = useStore((s) => s.removeNode);
   const setHoverNodeId = useStore((s) => s.setHoverNodeId);
@@ -26,6 +27,7 @@ function AiCard({
   const origin = useRef({ x: node.x, y: node.y });
   const isSource = connectSource === node.id;
   const connecting = !!connectSource;
+  const isFocused = useStore((s) => s.hoverNodeId === node.id);
 
   const pan = useMemo(
     () =>
@@ -48,7 +50,7 @@ function AiCard({
 
   return (
     <View
-      style={[s.card, { left: node.x, top: node.y }, isSource && s.cardSource]}
+      style={[s.card, { left: node.x, top: node.y }, isSource && s.cardSource, isFocused && s.cardFocus]}
       {...pan.panHandlers}>
       <View style={s.topRule} />
       <View style={s.inner}>
@@ -56,10 +58,13 @@ function AiCard({
           style={s.del}
           onPress={() => removeNode(node.id)}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Text style={s.delText}>×</Text>
+          <X size={15} color={p.textMuted} strokeWidth={2.2} />
         </TouchableOpacity>
 
-        <Text style={s.tag}>AI MEMO</Text>
+        <View style={s.tagRow}>
+          <View style={s.tagDot} />
+          <Text style={s.tag}>AI MEMO</Text>
+        </View>
         <Text style={s.heading}>{data.heading}</Text>
         <Text style={s.body} numberOfLines={10}>
           {data.body}
@@ -82,8 +87,9 @@ function AiCard({
           onPress={() =>
             connecting && !isSource ? onConnectTo(node.id) : onConnectStart(node.id)
           }>
+          <Link2 size={14} color={isSource || connecting ? p.accent : p.textMuted} strokeWidth={2.1} />
           <Text style={[s.link, isSource && s.linkActive]}>
-            {isSource ? 'pick target…' : connecting ? '⇢ connect' : '⚭ link'}
+            {isSource ? 'Pick target' : connecting ? 'Connect' : 'Link'}
           </Text>
         </TouchableOpacity>
       </View>
@@ -101,20 +107,26 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       backgroundColor: p.surface,
       borderWidth: 1,
       borderColor: p.border,
-      borderRadius: 10,
+      borderRadius: RADIUS.lg,
       overflow: 'hidden',
-      shadowColor: '#000',
-      shadowOpacity: 0.1,
-      shadowRadius: 8,
-      shadowOffset: { width: 0, height: 3 },
-      elevation: 3,
+      ...ELEVATION.card,
     },
     cardSource: { borderColor: p.accent, borderWidth: 1.5 },
-    topRule: { height: 4, backgroundColor: p.text },
+    cardFocus: {
+      borderColor: p.ai,
+      borderWidth: 2,
+      shadowColor: p.ai,
+      shadowOpacity: 0.5,
+      shadowRadius: 16,
+      shadowOffset: { width: 0, height: 0 },
+    },
+    topRule: { height: 3, backgroundColor: p.ai },
     inner: { padding: 12 },
     del: { position: 'absolute', top: 6, right: 8, zIndex: 2 },
     delText: { fontSize: 17, color: p.textMuted, lineHeight: 18 },
-    tag: { fontSize: 10, fontWeight: '800', letterSpacing: 1, color: p.accent, marginBottom: 4 },
+    tagRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 4 },
+    tagDot: { width: 5, height: 5, borderRadius: 2.5, backgroundColor: p.ai },
+    tag: { fontSize: 10, fontWeight: '800', letterSpacing: 1, color: p.ai },
     heading: { fontSize: 15, fontWeight: '700', color: p.text, marginBottom: 6, fontFamily: SERIF },
     body: { fontSize: 12.5, lineHeight: 18, color: p.textMid, marginBottom: 8, fontFamily: SERIF },
     chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginBottom: 8 },
@@ -126,7 +138,7 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       paddingVertical: 3,
     },
     chipText: { fontSize: 10.5, color: p.textMuted, fontFamily: SERIF },
-    linkBtn: { alignSelf: 'flex-start' },
+    linkBtn: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6 },
     link: { fontSize: 12, color: p.textMuted },
     linkActive: { color: p.accent, fontWeight: '700' },
   });

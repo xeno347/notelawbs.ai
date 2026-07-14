@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { Canvas, Path, Circle, Skia, DashPathEffect } from '@shopify/react-native-skia';
+import { Canvas, Path, Circle, Skia, DashPathEffect, BlurMask } from '@shopify/react-native-skia';
 import { useStore } from '../store';
-import { catStyle, getPalette } from '../theme';
+import { catStyle, useTheme } from '../theme';
 import { CARD_WIDTH } from './ExcerptCard';
 import { AI_CARD_WIDTH } from './AiCard';
 
@@ -12,7 +12,7 @@ function curvePath(x1: number, y1: number, x2: number, y2: number) {
 }
 
 export default function ThreadLayer() {
-  const p = getPalette();
+  const p = useTheme();
   const threadsOn = useStore((s) => s.threadsOn);
   const nodes = useStore((s) => s.nodes);
   const highlights = useStore((s) => s.highlights);
@@ -125,6 +125,18 @@ export default function ThreadLayer() {
           if (!path) return null;
           return (
             <React.Fragment key={i}>
+              {/* soft neon underlay */}
+              <Path
+                path={path}
+                color={pth.color}
+                style="stroke"
+                strokeWidth={6}
+                opacity={pth.opacity * 0.28}
+                strokeCap="round">
+                <BlurMask blur={6} style="normal" />
+                {pth.dashed && <DashPathEffect intervals={[6, 4]} />}
+              </Path>
+              {/* crisp thread */}
               <Path
                 path={path}
                 color={pth.color}
@@ -135,7 +147,9 @@ export default function ThreadLayer() {
                 {pth.dashed && <DashPathEffect intervals={[6, 4]} />}
               </Path>
               {pth.pin && (
-                <Circle cx={pth.pin.x} cy={pth.pin.y} r={4.5} color={p.accent} />
+                <Circle cx={pth.pin.x} cy={pth.pin.y} r={4.5} color={p.accent}>
+                  <BlurMask blur={3} style="solid" />
+                </Circle>
               )}
             </React.Fragment>
           );
