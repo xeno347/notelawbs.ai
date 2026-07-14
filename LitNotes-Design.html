@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>LitNotes Canvas — UX & System Design</title>
+<style>
+  :root{
+    --bg:#ffffff; --panel:#f7f8fa; --ink:#161a22; --muted:#6b7280; --faint:#9aa2af;
+    --line:#e5e7eb; --line2:#eef0f3;
+    --accent:#B8791E; --ai:#0E9F8B; --iris:#5B67E0;
+    --success:#2F9E63; --warning:#C2410C; --info:#2563EB;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; padding:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:12.5px; line-height:1.5; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .wrap{ max-width:900px; margin:0 auto; padding:40px 44px 60px; }
+  h1{ font-size:26px; margin:0 0 4px; letter-spacing:-.2px; }
+  h2{ font-size:17px; margin:30px 0 10px; padding-bottom:6px; border-bottom:1px solid var(--line);
+    page-break-after:avoid; }
+  h3{ font-size:13px; margin:16px 0 6px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+  p{ margin:6px 0; }
+  .sub{ color:var(--faint); font-size:12px; }
+  .lead{ color:var(--muted); font-size:12px; margin:2px 0 4px; }
+  code{ font-family:"SF Mono",Menlo,Consolas,monospace; font-size:11px;
+    background:var(--panel); padding:1px 5px; border-radius:4px; }
+  section{ page-break-inside:avoid; }
+
+  /* callouts */
+  .callout{ border:1px solid var(--line); border-left-width:4px; border-radius:8px;
+    padding:12px 14px; margin:14px 0; background:var(--panel); }
+  .callout .t{ font-weight:700; margin-bottom:4px; }
+  .callout.success{ border-left-color:var(--success); }
+  .callout.warning{ border-left-color:var(--warning); }
+  .callout.info{ border-left-color:var(--info); }
+  .callout ol{ margin:4px 0 0; padding-left:18px; }
+  .callout li{ margin:3px 0; }
+
+  /* stat strip */
+  .stats{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:8px 0; }
+  .stat{ border:1px solid var(--line); border-radius:10px; padding:14px; text-align:left; background:var(--panel); }
+  .stat .v{ font-size:26px; font-weight:800; line-height:1; }
+  .stat .l{ font-size:11px; color:var(--muted); margin-top:6px; }
+  .v.success{ color:var(--success);} .v.warning{ color:var(--warning);} .v.info{ color:var(--info);}
+
+  /* tables */
+  table{ width:100%; border-collapse:collapse; margin:8px 0; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  th,td{ text-align:left; padding:8px 11px; font-size:12px; border-bottom:1px solid var(--line2); vertical-align:top; }
+  th{ background:var(--panel); font-size:10.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); }
+  tr:last-child td{ border-bottom:none; }
+  td.dot{ position:relative; }
+  tr.success td:first-child{ box-shadow:inset 3px 0 0 var(--success); }
+  tr.warning td:first-child{ box-shadow:inset 3px 0 0 var(--warning); }
+  tr.info td:first-child{ box-shadow:inset 3px 0 0 var(--info); }
+  .strong{ font-weight:700; }
+
+  /* chips / flow */
+  .flow{ display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:6px 0; }
+  .chip{ display:inline-block; border:1px solid var(--line); border-radius:8px; padding:5px 9px; font-size:11px; background:#fff; }
+  .chip.key{ border-color:var(--accent); color:var(--accent); font-weight:700; }
+  .chip.term{ border-color:var(--accent); font-weight:600; }
+  .chip.ext{ border-style:dashed; }
+  .arw{ color:var(--faint); font-size:12px; }
+  .brnote{ color:var(--faint); font-size:10.5px; }
+
+  /* layer stack */
+  .layer{ border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin:7px 0; background:var(--panel); }
+  .layer.accent{ border-color:var(--accent); }
+  .layer .n{ font-size:11px; font-weight:700; color:var(--muted); margin-bottom:7px; }
+  .items{ display:flex; flex-wrap:wrap; gap:6px; }
+  .items span{ border:1px solid var(--line); background:#fff; border-radius:7px; padding:4px 8px; font-size:10.5px; }
+
+  /* grid of cards */
+  .cards{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .card{ border:1px solid var(--line); border-radius:10px; overflow:hidden; page-break-inside:avoid; }
+  .card .hd{ background:var(--panel); padding:7px 10px; font-size:11.5px; font-weight:700; display:flex; justify-content:space-between; align-items:center; }
+  .card .bd{ padding:9px 10px; }
+  .card .bd .f{ font-size:11px; margin:2px 0; display:flex; justify-content:space-between; }
+  .pk{ color:var(--accent); font-weight:700; font-size:9px; }
+  .fk{ color:var(--faint); font-weight:700; font-size:9px; }
+  .pill{ font-size:9.5px; font-weight:700; border:1px solid var(--line); border-radius:999px; padding:2px 8px; color:var(--muted); }
+  .pill.now{ background:var(--accent); color:#fff; border-color:var(--accent); }
+
+  /* sequence */
+  .seq{ counter-reset:step; margin:6px 0; }
+  .seq .m{ display:flex; gap:8px; padding:4px 0; border-bottom:1px solid var(--line2); font-size:11.5px; }
+  .seq .m:last-child{ border-bottom:none; }
+  .seq .num{ counter-increment:step; color:var(--faint); min-width:20px; }
+  .seq .m .who{ color:var(--accent); font-weight:600; }
+  .seq .m.dashed .lbl{ color:var(--muted); font-style:italic; }
+
+  .legend{ display:flex; gap:16px; flex-wrap:wrap; margin:6px 0; font-size:11px; color:var(--muted); }
+  .legend .k{ display:inline-flex; align-items:center; gap:6px; }
+  .sw{ width:12px; height:12px; border-radius:3px; border:1.6px solid var(--faint); }
+  .sw.a{ border-color:var(--accent); } .sw.d{ border-style:dashed; }
+
+  .kv{ border:1px solid var(--line); border-radius:9px; padding:9px 11px; margin:6px 0; display:flex; gap:12px; }
+  .kv .k{ min-width:86px; font-weight:700; font-size:11px; }
+  .kv .val{ color:var(--muted); font-size:11.5px; }
+  @page{ margin:14mm 12mm; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>LitNotes Canvas — UX &amp; System Design</h1>
+  <p class="sub">Tablet-first legal research app · "Obsidian Chamber" theme · Supabase cloud accounts + Figma-style live sharing.</p>
+  <p class="sub">Updated Jul 14, 2026 · demo target Aug 9</p>
+
+  <section class="callout success">
+    <div class="t">Where it stands</div>
+    <p>The full research app is built and runs 100% offline today. Cloud sign-in (Supabase + Google) and live workspace sharing are implemented end-to-end, type-check clean, and switch on the moment you add Supabase keys — no code changes. They have not yet been run on a device, so a short dry-run is the main thing between here and the demo.</p>
+  </section>
+
+  <section>
+    <h2>Status at a glance</h2>
+    <div class="stats">
+      <div class="stat"><div class="v success">14</div><div class="l">Shipping (offline)</div></div>
+      <div class="stat"><div class="v warning">5</div><div class="l">Coded · needs keys/device</div></div>
+      <div class="stat"><div class="v info">6</div><div class="l">Pending / not built</div></div>
+      <div class="stat"><div class="v success">0</div><div class="l">TypeScript errors</div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>What's built &amp; how good it is</h2>
+    <p class="lead">Shipping capabilities that work on-device today. Quality is a candid read, not a checkbox.</p>
+    <table>
+      <thead><tr><th>Capability</th><th>Area</th><th>Quality</th></tr></thead>
+      <tbody>
+        <tr class="success"><td>PDF reader — open, paginate, per-page OCR + scan-all</td><td>Reader</td><td class="strong">Solid</td></tr>
+        <tr class="success"><td>Highlight → categorise → excerpt card</td><td>Annotation</td><td class="strong">Solid</td></tr>
+        <tr class="success"><td>Infinite canvas — pan/zoom, drag, edges, ink, links</td><td>Canvas</td><td class="strong">Solid</td></tr>
+        <tr class="success"><td>Neon thread overlay (Skia glow)</td><td>Canvas</td><td class="strong">Solid</td></tr>
+        <tr class="success"><td>AI research — offline pack + live memo → card</td><td>AI</td><td class="strong">Good</td></tr>
+        <tr class="success"><td>Search across highlights / notes / OCR text</td><td>Organise</td><td class="strong">Good</td></tr>
+        <tr class="success"><td>Bundle index / bookmarks with reorder</td><td>Organise</td><td class="strong">Good</td></tr>
+        <tr class="success"><td>Export — canvas PNG + notes Markdown</td><td>Output</td><td class="strong">Good</td></tr>
+        <tr class="success"><td>Obsidian Chamber theme — light/dark/system, reactive</td><td>Design</td><td class="strong">Solid</td></tr>
+        <tr class="success"><td>App flow — splash → auth → perms → onboarding → workspace</td><td>Shell</td><td class="strong">Solid</td></tr>
+        <tr class="success"><td>Local offline accounts + persisted session</td><td>Auth</td><td class="strong">Good</td></tr>
+        <tr class="success"><td>Settings — 8 sections incl. Reading &amp; Collaboration</td><td>Settings</td><td class="strong">Solid</td></tr>
+        <tr class="success"><td>Per-user workspace isolation (no cross-account leak)</td><td>Data</td><td class="strong">Solid</td></tr>
+        <tr class="success"><td>Auto-OCR toggle + persisted permission state</td><td>Settings</td><td class="strong">Solid</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Built but not yet verified</h2>
+    <p class="lead">Code complete and compiling; each needs credentials and/or an on-device pass before it is demo-safe.</p>
+    <table>
+      <thead><tr><th>Capability</th><th>State</th><th>What it needs</th></tr></thead>
+      <tbody>
+        <tr class="warning"><td>Cloud auth — Supabase email + Google sign-in</td><td class="strong">Coded, untested</td><td>Supabase keys + one native rebuild</td></tr>
+        <tr class="warning"><td>Live sharing — presence, cursors, snapshot sync, roles</td><td class="strong">Coded, untested</td><td>Supabase keys; on-device dry-run</td></tr>
+        <tr class="warning"><td>iOS permission prompts</td><td class="strong">Partial</td><td>Android real; iOS auto-granted (no native module)</td></tr>
+        <tr class="warning"><td>Apple sign-in</td><td class="strong">Stub</td><td>Placeholder button only</td></tr>
+        <tr class="warning"><td>Session lock on background</td><td class="strong">Design only</td><td>State modelled, not yet wired</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Pending / not built</h2>
+    <table>
+      <thead><tr><th>Not built yet</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr class="info"><td>PDF binary sync to peers (Supabase Storage)</td><td>Peers sync notes layer, not the file yet</td></tr>
+        <tr class="info"><td>CRDT per-field merge for simultaneous editing</td><td>Currently last-writer-wins snapshots</td></tr>
+        <tr class="info"><td>Automated tests / full QA sweep</td><td>No test suite yet</td></tr>
+        <tr class="info"><td>App icons, splash assets, store listing</td><td>Default RN assets</td></tr>
+        <tr class="info"><td>Crash / analytics opt-in</td><td>Not instrumented</td></tr>
+        <tr class="info"><td>Research offline queue + retries</td><td>Single-shot calls today</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Quality assessment</h2>
+    <table>
+      <thead><tr><th>Area</th><th>Rating</th><th>Assessment</th></tr></thead>
+      <tbody>
+        <tr class="success"><td>Core research loop (read → highlight → canvas → thread)</td><td class="strong">Strong</td><td>The product's spine. Fluid, tablet-first, Skia-smooth; the part most worth demoing.</td></tr>
+        <tr class="success"><td>Visual design &amp; theming</td><td class="strong">Strong</td><td>Cohesive Obsidian Chamber palette, unified Lucide icons, reactive light/dark/system.</td></tr>
+        <tr class="success"><td>On-device data &amp; accounts</td><td class="strong">Solid</td><td>Per-user isolation, debounced persistence, session restore. Local hashing is demo-grade, not production crypto.</td></tr>
+        <tr class="warning"><td>AI research</td><td class="strong">Good</td><td>Works offline; live mode is genuinely useful with an Anthropic key. No queue/retry yet.</td></tr>
+        <tr class="warning"><td>Cloud auth (Supabase + Google)</td><td class="strong">Promising</td><td>Cleanly abstracted with offline fallback; compiles and lints, but unverified on a device.</td></tr>
+        <tr class="warning"><td>Live collaboration</td><td class="strong">Promising</td><td>Presence, cursors, roles and real-time canvas sync implemented end-to-end. Snapshot LWW (not CRDT); PDF file not yet shared; needs a multiplayer dry-run.</td></tr>
+        <tr class="info"><td>Testing &amp; release hardening</td><td class="strong">Early</td><td>No automated tests, default app assets, no analytics. Expected for a pre-demo build.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="callout warning">
+    <div class="t">Before the demo</div>
+    <ol>
+      <li>Create a Supabase project, paste URL + anon key in Settings → Collaboration (no rebuild needed for that step).</li>
+      <li>(Optional) Configure Google OAuth and add the client IDs, then rebuild once for the new native Google Sign-In module.</li>
+      <li>Run a two-device dry-run of live sharing (presence, cursors, edit/view roles) and a light/dark + permissions pass.</li>
+    </ol>
+  </section>
+
+  <section class="callout info">
+    <div class="t">Confirmed decisions</div>
+    <ol>
+      <li>Theme follows the device default, defaults to Light when unset, with a manual System / Light / Dark override in Settings.</li>
+      <li>Settings covers Appearance, Reading, Account, AI &amp; API key, Collaboration, Permissions, Data &amp; backup, About.</li>
+      <li>Permissions (files, notifications, media for OCR) are requested during login and their grant-state is persisted.</li>
+      <li>Sharing backend is Supabase Realtime; identity is Supabase Auth with Google + email, and guests can join a live room from an invite link.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Theme tokens — Obsidian Chamber</h2>
+    <table>
+      <thead><tr><th>Token</th><th>Dark value</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td><code>bg</code></td><td><code>#0A0C12</code></td><td>App base — blue-black</td></tr>
+        <tr><td><code>surface</code></td><td><code>#141822</code></td><td>Cards, toolbars</td></tr>
+        <tr><td><code>surfaceGlass</code></td><td><code>rgba(20,25,36,0.55)</code></td><td>Frosted panels</td></tr>
+        <tr><td><code>accent</code></td><td><code>#E8A13C</code></td><td>Primary — warm brass</td></tr>
+        <tr><td><code>ai</code></td><td><code>#38E0C8</code></td><td>AI / research channel</td></tr>
+        <tr><td><code>iris</code></td><td><code>#7C8CF8</code></td><td>Threads / links</td></tr>
+        <tr><td><code>text</code></td><td><code>#F0F2F7</code></td><td>Primary text</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>1 · User flow</h2>
+    <p class="lead">Splash → auth (local or cloud) → permissions → onboarding → workspace hub, then the core research loops and live sharing.</p>
+    <div class="flow">
+      <span class="chip term">Splash</span><span class="arw">→</span>
+      <span class="chip">Sign in / Sign up</span><span class="arw">→</span>
+      <span class="chip ext">Google / cloud login</span><span class="arw">→</span>
+      <span class="chip">Permissions</span><span class="arw">→</span>
+      <span class="chip">Onboarding</span><span class="arw">→</span>
+      <span class="chip key">Workspace</span>
+    </div>
+    <div class="flow">
+      <span class="brnote">From Workspace:</span>
+      <span class="chip">Open judgment</span><span class="arw">→</span>
+      <span class="chip">Read + highlight</span><span class="arw">→</span>
+      <span class="chip">Excerpt → canvas card</span><span class="arw">→</span>
+      <span class="chip term">Live share</span>
+    </div>
+    <div class="flow">
+      <span class="brnote">Also:</span>
+      <span class="chip">AI research memo</span><span class="arw">·</span>
+      <span class="chip">Search everything</span><span class="arw">·</span>
+      <span class="chip">Bundle index</span><span class="arw">·</span>
+      <span class="chip term">Export PNG / Markdown</span><span class="arw">·</span>
+      <span class="chip">Settings ⇄ Workspace</span>
+    </div>
+    <div class="legend">
+      <span class="k"><span class="sw a"></span>Start / end / key</span>
+      <span class="k"><span class="sw"></span>Screen / process</span>
+      <span class="k"><span class="sw d"></span>External</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>2 · Navigation / information architecture</h2>
+    <div class="cards">
+      <div class="card"><div class="hd">Auth</div><div class="bd"><div class="f">Sign in / Sign up</div></div></div>
+      <div class="card"><div class="hd">Workspace</div><div class="bd"><div class="f">Reader pane</div><div class="f">Canvas pane</div><div class="f">Side sheets: Search, Research, Index, Export, Share</div></div></div>
+      <div class="card"><div class="hd">Settings</div><div class="bd"><div class="f">Appearance</div><div class="f">Reading</div><div class="f">Account</div><div class="f">AI &amp; API key</div><div class="f">Collaboration</div><div class="f">Permissions</div><div class="f">Data &amp; backup</div><div class="f">About</div></div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3 · Functional decomposition</h2>
+    <div class="cards">
+      <div class="card"><div class="hd">Reading</div><div class="bd"><div class="f">Open PDF</div><div class="f">Paginate</div><div class="f">OCR scan</div></div></div>
+      <div class="card"><div class="hd">Annotation</div><div class="bd"><div class="f">Highlight</div><div class="f">Categorise</div><div class="f">Notes</div></div></div>
+      <div class="card"><div class="hd">Canvas</div><div class="bd"><div class="f">Cards</div><div class="f">Ink draw</div><div class="f">Link / threads</div></div></div>
+      <div class="card"><div class="hd">AI Research</div><div class="bd"><div class="f">Offline pack</div><div class="f">Live LLM</div><div class="f">Memo → card</div></div></div>
+      <div class="card"><div class="hd">Organisation</div><div class="bd"><div class="f">Bundle index</div><div class="f">Search</div></div></div>
+      <div class="card"><div class="hd">Data &amp; Account</div><div class="bd"><div class="f">Auth / session</div><div class="f">Persist</div><div class="f">Export</div><div class="f">Permissions</div></div></div>
+      <div class="card"><div class="hd">Collaboration</div><div class="bd"><div class="f">Presence</div><div class="f">Live sync</div><div class="f">Cursors + roles</div></div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>4 · Use case diagram</h2>
+    <p class="lead">Primary actor: Legal Researcher. Secondary actors: Anthropic API, Supabase (auth + realtime).</p>
+    <div class="items">
+      <span>Sign in / Sign up</span><span>Grant permissions</span><span>Open judgment PDF</span>
+      <span>Highlight passage</span><span>Categorise excerpt</span><span>Work on canvas</span>
+      <span>Draw &amp; link ink</span><span>Run AI research</span><span>Search everything</span>
+      <span>Build bundle index</span><span>Export notes / PNG</span><span>Share live workspace</span>
+      <span>Join a shared room</span><span>Manage settings</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>5 · System architecture (layered)</h2>
+    <div class="layer"><div class="n">Presentation (React Native components)</div><div class="items"><span>TopBar</span><span>PdfReader</span><span>CanvasBoard</span><span>ThreadLayer</span><span>Panels</span><span>Auth</span><span>Settings</span><span>ShareModal</span></div></div>
+    <div class="layer accent"><div class="n">State (Zustand stores)</div><div class="items"><span>workspace</span><span>ui</span><span>research</span><span>ocr</span><span>authStore</span><span>collabStore</span></div></div>
+    <div class="layer"><div class="n">Domain services</div><div class="items"><span>researchCore</span><span>ocrService</span><span>exportService</span><span>searchIndex</span><span>supabase</span><span>permissionsService</span></div></div>
+    <div class="layer"><div class="n">Persistence</div><div class="items"><span>AsyncStorage (per-user workspace / settings)</span><span>FileSystem (PDF copy)</span></div></div>
+    <div class="layer"><div class="n">Native modules &amp; libraries</div><div class="items"><span>react-native-pdf</span><span>Skia</span><span>ML Kit OCR</span><span>Blur</span><span>DocumentPicker</span><span>Share</span><span>ViewShot</span><span>Google Sign-In</span></div></div>
+    <div class="layer"><div class="n">Cloud &amp; realtime (optional)</div><div class="items"><span>Supabase Auth (email + Google)</span><span>Supabase Realtime (presence / broadcast)</span><span>Anthropic API — live research</span></div></div>
+    <p class="sub">Data flows top → bottom; only the stores talk to persistence. The network is optional and opt-in: research, cloud auth and live sharing. With no keys, the app runs fully on-device.</p>
+  </section>
+
+  <section>
+    <h2>6 · Data flow (level 1)</h2>
+    <div class="seq">
+      <div class="m"><span class="num"></span><span><span class="who">User</span> → Capture highlight → Workspace store <span class="brnote">(highlight + node)</span></span></div>
+      <div class="m"><span class="num"></span><span><span class="who">PDF file</span> → OCR index → Workspace store <span class="brnote">(page text)</span></span></div>
+      <div class="m"><span class="num"></span><span><span class="who">User</span> → Canvas ops → Workspace store <span class="brnote">(edges / ink)</span></span></div>
+      <div class="m"><span class="num"></span><span><span class="who">User</span> → Research → Anthropic API → Workspace store <span class="brnote">(AI node)</span></span></div>
+      <div class="m"><span class="num"></span><span>Workspace store → Export → <span class="who">User</span> <span class="brnote">(file)</span></span></div>
+      <div class="m"><span class="num"></span><span>Workspace store → collabStore → Supabase Realtime → <span class="who">Peers</span> <span class="brnote">(snapshot + cursors)</span></span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>7 · Sequence — login &amp; permissions</h2>
+    <div class="seq">
+      <div class="m"><span class="num">1.</span><span><span class="who">User → SplashGate</span>: launch app</span></div>
+      <div class="m"><span class="num">2.</span><span><span class="who">SplashGate → Store</span>: check session</span></div>
+      <div class="m dashed"><span class="num">3.</span><span class="lbl"><span class="who">Store → SplashGate</span>: no session</span></div>
+      <div class="m"><span class="num">4.</span><span><span class="who">SplashGate → AuthScreen</span>: show sign in</span></div>
+      <div class="m"><span class="num">5.</span><span><span class="who">User → AuthScreen</span>: submit credentials (or Google)</span></div>
+      <div class="m"><span class="num">6.</span><span><span class="who">AuthScreen → AuthService</span>: authenticate()</span></div>
+      <div class="m"><span class="num">7.</span><span><span class="who">AuthService → Store</span>: persist session + scope workspace</span></div>
+      <div class="m"><span class="num">8.</span><span><span class="who">AuthScreen → Permissions</span>: request files / notif / media</span></div>
+      <div class="m"><span class="num">9.</span><span><span class="who">User → Permissions</span>: grant / deny → saved</span></div>
+      <div class="m dashed"><span class="num">10.</span><span class="lbl"><span class="who">AuthScreen → User</span>: enter workspace</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>8 · Sequence — highlight to canvas</h2>
+    <div class="seq">
+      <div class="m"><span class="num">1.</span><span><span class="who">User → PdfReader</span>: tap + draw rect</span></div>
+      <div class="m"><span class="num">2.</span><span><span class="who">PdfReader → Popover</span>: open with rect</span></div>
+      <div class="m"><span class="num">3.</span><span><span class="who">User → Popover</span>: pick category + note</span></div>
+      <div class="m"><span class="num">4.</span><span><span class="who">Popover → Store</span>: addHighlight() + addExcerptNode()</span></div>
+      <div class="m"><span class="num">5.</span><span><span class="who">Store → Storage</span>: saveWorkspaceDebounced</span></div>
+      <div class="m dashed"><span class="num">6.</span><span class="lbl"><span class="who">Store → CanvasBoard</span>: re-render node → card appears</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>9 · Live collaboration — how sharing works</h2>
+    <p class="lead">A pluggable realtime layer on Supabase. The Share UI, presence, cursors and roles are identical regardless of backend; only the transport underneath is swappable.</p>
+    <div class="kv"><div class="k">Transport</div><div class="val">One Supabase Realtime channel per room (room:&lt;CODE&gt;). WebSocket, free tier.</div></div>
+    <div class="kv"><div class="k">Presence</div><div class="val">Who is in the room + name, colour and role — drives avatar pips and the participant list.</div></div>
+    <div class="kv"><div class="k">State sync</div><div class="val">Canvas, threads, ink, highlights, index and OCR broadcast as debounced snapshots (last-writer-wins); late joiners request the current state.</div></div>
+    <div class="kv"><div class="k">Cursors</div><div class="val">Broadcast in board/world coordinates, rendered per-peer and inverse-scaled to stay crisp at any zoom.</div></div>
+    <div class="kv"><div class="k">Roles</div><div class="val">Owner / editor / viewer. Viewers are read-only (canvas editing + PDF highlighting disabled).</div></div>
+    <div class="kv"><div class="k">Invites</div><div class="val">litnotes://join/&lt;CODE&gt;?a=edit|view deep link + 6-char room code; native share sheet.</div></div>
+  </section>
+
+  <section>
+    <h2>10 · Sequence — live share session</h2>
+    <div class="seq">
+      <div class="m"><span class="num">1.</span><span><span class="who">Owner → CollabStore</span>: startShare(edit|view)</span></div>
+      <div class="m"><span class="num">2.</span><span><span class="who">CollabStore → Realtime</span>: subscribe room:CODE + track presence</span></div>
+      <div class="m"><span class="num">3.</span><span><span class="who">CollabStore → Store</span>: getSyncState()</span></div>
+      <div class="m"><span class="num">4.</span><span><span class="who">CollabStore → Realtime</span>: broadcast snapshot</span></div>
+      <div class="m"><span class="num">5.</span><span><span class="who">Peer → Realtime</span>: join via link / code</span></div>
+      <div class="m dashed"><span class="num">6.</span><span class="lbl"><span class="who">Realtime → Peer</span>: presence sync (avatars)</span></div>
+      <div class="m"><span class="num">7.</span><span><span class="who">Peer → Realtime</span>: request_snapshot</span></div>
+      <div class="m dashed"><span class="num">8.</span><span class="lbl"><span class="who">Realtime → Peer</span>: snapshot → applyRemote</span></div>
+      <div class="m"><span class="num">9.</span><span><span class="who">Owner → Store</span>: edit card / ink</span></div>
+      <div class="m"><span class="num">10.</span><span><span class="who">Store → Realtime</span>: debounced snapshot</span></div>
+      <div class="m dashed"><span class="num">11.</span><span class="lbl"><span class="who">Realtime → Peer</span>: live update + cursor</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>11 · Session state machine</h2>
+    <p class="lead">Dashed transitions are error / return / logout edges. "Backgrounded / locked" is modelled but not yet wired in code.</p>
+    <div class="flow">
+      <span class="chip term">Launching</span><span class="arw">→</span>
+      <span class="chip">Unauthenticated</span><span class="arw">→</span>
+      <span class="chip">Authenticating</span><span class="arw">→</span>
+      <span class="chip">Permission prompt</span><span class="arw">→</span>
+      <span class="chip">Onboarding</span><span class="arw">→</span>
+      <span class="chip key">Active session</span><span class="arw">⇄</span>
+      <span class="chip">Backgrounded / locked</span>
+    </div>
+    <p class="sub">Authenticating → Unauthenticated on error · Active session → Unauthenticated on log out · Permission prompt → Active session for returning users.</p>
+  </section>
+
+  <section>
+    <h2>12 · Data model (ER)</h2>
+    <p class="lead">Workspaces are scoped per user; Settings persists theme, permissions and autoOcr. Live rooms are ephemeral (presence + broadcast), not persisted tables.</p>
+    <div class="cards">
+      <div class="card"><div class="hd">User</div><div class="bd"><div class="f">id <span class="pk">PK</span></div><div class="f">email</div><div class="f">displayName</div><div class="f">createdAt</div></div></div>
+      <div class="card"><div class="hd">Settings</div><div class="bd"><div class="f">userId <span class="fk">FK</span></div><div class="f">themeMode</div><div class="f">apiKeyRef</div><div class="f">permissions</div><div class="f">autoOcr</div></div></div>
+      <div class="card"><div class="hd">Workspace</div><div class="bd"><div class="f">id <span class="pk">PK</span></div><div class="f">userId <span class="fk">FK</span></div><div class="f">docName</div><div class="f">docUri</div><div class="f">numPages</div><div class="f">updatedAt</div></div></div>
+      <div class="card"><div class="hd">Highlight</div><div class="bd"><div class="f">id <span class="pk">PK</span></div><div class="f">workspaceId <span class="fk">FK</span></div><div class="f">page</div><div class="f">rect</div><div class="f">category</div><div class="f">text / note</div></div></div>
+      <div class="card"><div class="hd">CanvasNode</div><div class="bd"><div class="f">id <span class="pk">PK</span></div><div class="f">workspaceId <span class="fk">FK</span></div><div class="f">type (excerpt|ai)</div><div class="f">x, y</div><div class="f">highlightId <span class="fk">FK</span></div><div class="f">payload</div></div></div>
+      <div class="card"><div class="hd">Edge</div><div class="bd"><div class="f">id <span class="pk">PK</span></div><div class="f">fromNodeId <span class="fk">FK</span></div><div class="f">toNodeId <span class="fk">FK</span></div></div></div>
+      <div class="card"><div class="hd">InkStroke</div><div class="bd"><div class="f">id <span class="pk">PK</span></div><div class="f">workspaceId <span class="fk">FK</span></div><div class="f">points</div><div class="f">color</div></div></div>
+      <div class="card"><div class="hd">InkLink</div><div class="bd"><div class="f">id <span class="pk">PK</span></div><div class="f">strokeId <span class="fk">FK</span></div><div class="f">target (hl | page+xy)</div></div></div>
+      <div class="card"><div class="hd">OcrPage</div><div class="bd"><div class="f">page <span class="pk">PK</span></div><div class="f">workspaceId <span class="fk">FK</span></div><div class="f">text</div></div></div>
+      <div class="card"><div class="hd">Bookmark</div><div class="bd"><div class="f">id <span class="pk">PK</span></div><div class="f">workspaceId <span class="fk">FK</span></div><div class="f">section / title</div><div class="f">page / order</div></div></div>
+    </div>
+    <h3>Relationships</h3>
+    <table>
+      <thead><tr><th>From</th><th>Cardinality</th><th>To</th></tr></thead>
+      <tbody>
+        <tr><td>User</td><td>1 — 1</td><td>Settings</td></tr>
+        <tr><td>User</td><td>1 — *</td><td>Workspace</td></tr>
+        <tr><td>Workspace</td><td>1 — *</td><td>Highlight</td></tr>
+        <tr><td>Workspace</td><td>1 — *</td><td>CanvasNode</td></tr>
+        <tr><td>Highlight</td><td>1 — 0..1</td><td>CanvasNode</td></tr>
+        <tr><td>CanvasNode</td><td>1 — *</td><td>Edge (from / to)</td></tr>
+        <tr><td>Workspace</td><td>1 — *</td><td>InkStroke → InkLink</td></tr>
+        <tr><td>Workspace</td><td>1 — *</td><td>OcrPage / Bookmark</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>13 · SDLC — where we are</h2>
+    <div class="cards">
+      <div class="card"><div class="hd">1 · Requirements <span class="pill">Done</span></div><div class="bd"><div class="f">Legal research workflow</div><div class="f">Tablet-first scope</div><div class="f">Added: cloud + live sharing</div></div></div>
+      <div class="card"><div class="hd">2 · UX / UI Design <span class="pill">Done</span></div><div class="bd"><div class="f">User + navigation flows</div><div class="f">Obsidian Chamber theme</div><div class="f">Auth / settings / share UI</div></div></div>
+      <div class="card"><div class="hd">3 · Architecture <span class="pill">Done</span></div><div class="bd"><div class="f">Shared primitives + stores</div><div class="f">Per-user storage + session gate</div><div class="f">Pluggable realtime layer</div></div></div>
+      <div class="card"><div class="hd">4 · Implementation <span class="pill now">Now</span></div><div class="bd"><div class="f">Core app complete</div><div class="f">Cloud auth + live share coded</div><div class="f">Needs keys + native rebuild</div></div></div>
+      <div class="card"><div class="hd">5 · Testing / QA <span class="pill">Next</span></div><div class="bd"><div class="f">On-device smoke test</div><div class="f">Multiplayer dry-run</div><div class="f">Light / dark / permission cases</div></div></div>
+      <div class="card"><div class="hd">6 · Release <span class="pill">Next</span></div><div class="bd"><div class="f">App icons + store assets</div><div class="f">Crash / analytics opt-in</div><div class="f">Iterate on demo feedback</div></div></div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>
