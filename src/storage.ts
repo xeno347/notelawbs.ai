@@ -13,6 +13,7 @@ export type Persisted = {
   docUri: string;
   activeDocId?: string;
   numPages: number;
+  currentPage?: number;
   library: Array<{ id: string; name: string; uri: string }>;
   highlights: any[];
   nodes: any[];

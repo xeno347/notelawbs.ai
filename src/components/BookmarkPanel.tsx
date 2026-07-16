@@ -40,6 +40,7 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
   const [title, setTitle] = useState('');
   const [note, setNote] = useState('');
   const [page, setPage] = useState('');
+  const [endPage, setEndPage] = useState('');
   const [date, setDate] = useState('');
 
   const meta = SECTIONS.find((sec) => sec.key === active)!;
@@ -55,6 +56,7 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
     setTitle('');
     setNote('');
     setPage('');
+    setEndPage('');
     setDate('');
   };
 
@@ -64,16 +66,19 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
     setTitle(b.title);
     setNote(b.note);
     setPage(b.page ? String(b.page) : '');
+    setEndPage(b.endPage ? String(b.endPage) : '');
     setDate(b.date);
   };
 
   const submit = () => {
     if (!title.trim() && !note.trim()) return;
     const pageNum = page.trim() ? Math.max(1, parseInt(page, 10) || 0) || null : null;
+    const endPageNum = endPage.trim() ? Math.max(1, parseInt(endPage, 10) || 0) || null : null;
     const payload = {
       title: title.trim(),
       note: note.trim(),
       page: pageNum,
+      endPage: endPageNum && pageNum && endPageNum > pageNum ? endPageNum : null,
       date: date.trim(),
       parentId: parentId || null,
     };
@@ -124,7 +129,10 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
           </TouchableOpacity>
           {item.page != null && (
             <TouchableOpacity style={s.pagePill} onPress={() => jumpToPage(item.page!)}>
-              <Text style={s.pagePillText}>p. {item.page}</Text>
+              <Text style={s.pagePillText}>
+                p. {item.page}
+                {item.endPage && item.endPage > item.page ? `–${item.endPage}` : ''}
+              </Text>
             </TouchableOpacity>
           )}
           <TouchableOpacity
@@ -233,6 +241,14 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
                 placeholderTextColor={p.textMuted}
                 value={page}
                 onChangeText={setPage}
+                keyboardType="number-pad"
+              />
+              <TextInput
+                style={[s.input, s.pageInput]}
+                placeholder="to page"
+                placeholderTextColor={p.textMuted}
+                value={endPage}
+                onChangeText={setEndPage}
                 keyboardType="number-pad"
               />
               <TouchableOpacity style={s.linkPageBtn} onPress={useCurrentPage}>

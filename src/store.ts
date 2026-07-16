@@ -18,6 +18,14 @@ import {
 import type { CategoryKey } from './theme';
 import type { ResearchResult } from './research/researchCore';
 import type { OcrPageData } from './services/ocrService';
+import { reanchorText } from './services/reanchor';
+import { unionRects } from './services/textSelection';
+
+/** Default footprint used when a group node hasn't been resized yet (matches GroupCard's defaults). */
+const GROUP_DEFAULT_W = 280;
+const GROUP_DEFAULT_H = 180;
+/** Board units per grid cell — matches CanvasBoard's DotGrid spacing. */
+const GRID_STEP = 26;
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
@@ -38,6 +46,13 @@ export type Highlight = {
   markStyle?: MarkStyle;
   /** Freeform tags for filtering / export. */
   tags?: string[];
+  /**
+   * 'exact' = rects came directly from the OCR pass that was live when the
+   * highlight was created. 'approximate' = rects were recovered by fuzzy
+   * text-matching after a later OCR retry moved things around (see
+   * reanchorHighlightsForPage) — shown to the user as a trust indicator.
+   */
+  anchorStatus?: 'exact' | 'approximate';
 };
 
 export type ExcerptData = {
@@ -65,6 +80,8 @@ export type FlowNode = {
   h?: number;
   /** Paint / stack order — higher draws on top. */
   z?: number;
+  /** Containing group node id, when this card sits inside a group box. */
+  groupId?: string;
   data: ExcerptData | AiData | NoteData | GroupData;
 };
 
@@ -115,6 +132,8 @@ export type Bookmark = {
   title: string;
   note: string;
   page: number | null;
+  /** Optional end of a page range (e.g. an annexure spanning pp. 201–215). */
+  endPage?: number | null;
   date: string;
   order: number;
   /** Nested court-index parent (same section). */
@@ -128,6 +147,11 @@ type ResearchState = {
   error: string | null;
   mode: 'offline' | 'live';
 };
+
+/** One undo/redo checkpoint — the structural canvas state (not ink, which has its own undo). */
+type CanvasSnapshot = { nodes: FlowNode[]; edges: Edge[] };
+type HistoryState = { past: CanvasSnapshot[]; future: CanvasSnapshot[] };
+const emptyHistory: HistoryState = { past: [], future: [] };
 
 let dropCounter = 0;
 
@@ -223,10 +247,27 @@ type StoreState = {
   moveNode: (id: string, x: number, y: number) => void;
   resizeNode: (id: string, w: number, h: number) => void;
   bringNodeToFront: (id: string) => void;
+  sendNodeToBack: (id: string) => void;
   removeNode: (id: string) => void;
   addEdge: (source: string, target: string, label?: string) => void;
   updateEdge: (id: string, patch: Partial<Pick<Edge, 'label'>>) => void;
   removeEdge: (id: string) => void;
+
+  /** Assign / clear a card's containing group by testing its center against group bounds. */
+  setNodeGroup: (id: string, groupId: string | null | undefined) => void;
+  assignNodeGroupByPosition: (id: string) => void;
+
+  snapToGrid: boolean;
+  toggleSnapToGrid: () => void;
+
+  /** Structural (nodes/edges) undo — separate from ink's own undoStroke. */
+  history: HistoryState;
+  commitHistory: () => void;
+  undoCanvas: () => void;
+  redoCanvas: () => void;
+
+  /** Re-match a page's highlights against a freshly re-OCR'd layout (e.g. after a manual retry). */
+  reanchorHighlightsForPage: (page: number, docId: string | undefined, pageData: OcrPageData) => void;
 
   addStroke: (stroke: Stroke) => void;
   undoStroke: () => void;
@@ -292,6 +333,7 @@ function snapshot(s: StoreState): Persisted {
     docUri: s.docUri,
     activeDocId: s.activeDocId,
     numPages: s.numPages,
+    currentPage: s.currentPage,
     library: s.library,
     highlights: s.highlights,
     nodes: s.nodes,
@@ -318,6 +360,7 @@ const emptyWorkspace = {
   ocr: { pages: {} as Record<number, string>, layouts: {} as Record<number, OcrPageData>, processingPage: null as number | null, scanning: false, scanProgress: null as { done: number; total: number } | null },
   bookmarks: [] as Bookmark[],
   docBoard: { ...DEFAULT_DOC_BOARD },
+  history: { ...emptyHistory },
 };
 
 function applyPersisted(data: Persisted) {
@@ -334,7 +377,7 @@ function applyPersisted(data: Persisted) {
     activeDocId: active?.id || '',
     library: lib,
     numPages: data.numPages || 0,
-    currentPage: 1,
+    currentPage: data.currentPage && data.currentPage > 0 ? data.currentPage : 1,
     highlights: data.highlights || [],
     nodes: (data.nodes || []).filter((n: FlowNode) => n.type !== ('ink' as any)),
     edges: data.edges || [],
@@ -342,6 +385,7 @@ function applyPersisted(data: Persisted) {
     ocr: { pages: data.ocrPages || {}, layouts: data.ocrLayouts || {}, processingPage: null, scanning: false, scanProgress: null },
     bookmarks: data.bookmarks || [],
     docBoard: data.docBoard && data.docBoard.w > 100 ? data.docBoard : { ...DEFAULT_DOC_BOARD },
+    history: { ...emptyHistory },
   };
 }
 
@@ -354,6 +398,7 @@ export const useStore = create<StoreState>((set, get) => ({
   autoOcr: true,
   ...emptyWorkspace,
   threadsOn: true,
+  snapToGrid: false,
   hoverNodeId: null,
   flashTarget: null,
   linking: { active: false, step: null, inkPoint: null },
@@ -373,7 +418,10 @@ export const useStore = create<StoreState>((set, get) => ({
     saveWorkspaceDebounced(snapshot(get()));
   },
   setCanvasOrigin: (o) => set({ canvasOrigin: o }),
-  setCanvasTf: (t) => set({ canvasTf: t }),
+  setCanvasTf: (t) =>
+    set((s) =>
+      s.canvasTf.s === t.s && s.canvasTf.tx === t.tx && s.canvasTf.ty === t.ty ? s : { canvasTf: t },
+    ),
   setCanvasViewport: (v) => set({ canvasViewport: v }),
   setNodeSize: (id, size) =>
     set((s) => {
@@ -525,6 +573,7 @@ export const useStore = create<StoreState>((set, get) => ({
       ink: sync.ink || { strokes: [], links: [] },
       ocr: { ...s.ocr, pages: sync.ocrPages || {} },
       bookmarks: sync.bookmarks || [],
+      history: { ...emptyHistory },
     }));
     saveWorkspaceDebounced(snapshot(get()));
   },
@@ -577,13 +626,17 @@ export const useStore = create<StoreState>((set, get) => ({
     saveWorkspaceDebounced(snapshot(get()));
   },
 
-  setCurrentPage: (page) => set({ currentPage: page }),
+  setCurrentPage: (page) => {
+    set({ currentPage: page });
+    saveWorkspaceDebounced(snapshot(get()));
+  },
 
   addHighlight: (h) => {
     const highlight: Highlight = {
       id: uid(),
       ...h,
       docId: h.docId || get().activeDocId || undefined,
+      anchorStatus: 'exact',
     };
     set((s) => ({ highlights: [...s.highlights, highlight] }));
     saveWorkspaceDebounced(snapshot(get()));
@@ -675,6 +728,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   addExcerptNode: (data) => {
+    get().commitHistory();
     const pos = get().nextDropPos();
     const maxZ = get().nodes.reduce((m, n) => Math.max(m, n.z || 0), 0);
     const node: FlowNode = {
@@ -692,6 +746,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   addAiNode: (data) => {
+    get().commitHistory();
     const pos = get().nextDropPos();
     const maxZ = get().nodes.reduce((m, n) => Math.max(m, n.z || 0), 0);
     const node: FlowNode = { id: uid(), type: 'ai', x: pos.x, y: pos.y, w: 288, z: maxZ + 1, data };
@@ -701,6 +756,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   addNoteNode: (text = '') => {
+    get().commitHistory();
     const pos = get().nextDropPos();
     const maxZ = get().nodes.reduce((m, n) => Math.max(m, n.z || 0), 0);
     const node: FlowNode = {
@@ -718,6 +774,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   addGroupNode: (title = 'Untitled section') => {
+    get().commitHistory();
     const pos = get().nextDropPos();
     const maxZ = get().nodes.reduce((m, n) => Math.max(m, n.z || 0), 0);
     const node: FlowNode = {
@@ -725,7 +782,8 @@ export const useStore = create<StoreState>((set, get) => ({
       type: 'group',
       x: pos.x,
       y: pos.y,
-      w: 280,
+      w: GROUP_DEFAULT_W,
+      h: GROUP_DEFAULT_H,
       z: maxZ + 1,
       data: { title },
     };
@@ -744,14 +802,22 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   moveNode: (id, x, y) => {
-    set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? { ...n, x, y } : n)) }));
+    const snap = get().snapToGrid;
+    const nx = snap ? Math.round(x / GRID_STEP) * GRID_STEP : x;
+    const ny = snap ? Math.round(y / GRID_STEP) * GRID_STEP : y;
+    set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? { ...n, x: nx, y: ny } : n)) }));
     // Persist is debounced; avoid forcing a snapshot every pointer frame.
     saveWorkspaceDebounced(snapshot(get()));
   },
 
   resizeNode: (id, w, h) => {
-    const nextW = Math.max(180, Math.min(520, w));
-    const nextH = Math.max(100, Math.min(720, h));
+    const snap = get().snapToGrid;
+    let nextW = Math.max(180, Math.min(520, w));
+    let nextH = Math.max(100, Math.min(720, h));
+    if (snap) {
+      nextW = Math.round(nextW / GRID_STEP) * GRID_STEP;
+      nextH = Math.round(nextH / GRID_STEP) * GRID_STEP;
+    }
     set((s) => ({
       nodes: s.nodes.map((n) => (n.id === id ? { ...n, w: nextW, h: nextH } : n)),
       nodeSizes: { ...s.nodeSizes, [id]: { w: nextW, h: nextH } },
@@ -768,13 +834,99 @@ export const useStore = create<StoreState>((set, get) => ({
     });
   },
 
-  removeNode: (id) => {
+  sendNodeToBack: (id) => {
+    set((s) => {
+      const minZ = s.nodes.reduce((m, n) => Math.min(m, n.z || 0), 0);
+      const cur = s.nodes.find((n) => n.id === id);
+      if (!cur || (cur.z || 0) <= minZ) return s;
+      return { nodes: s.nodes.map((n) => (n.id === id ? { ...n, z: minZ - 1 } : n)) };
+    });
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  setNodeGroup: (id, groupId) => {
     set((s) => ({
-      nodes: s.nodes.filter((n) => n.id !== id),
-      edges: s.edges.filter((e) => e.source !== id && e.target !== id),
-      nodeSizes: Object.fromEntries(Object.entries(s.nodeSizes).filter(([nodeId]) => nodeId !== id)),
-      nodeAnchors: Object.fromEntries(Object.entries(s.nodeAnchors).filter(([nodeId]) => nodeId !== id)),
+      nodes: s.nodes.map((n) => (n.id === id ? { ...n, groupId: groupId || undefined } : n)),
     }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  assignNodeGroupByPosition: (id) => {
+    const { nodes } = get();
+    const n = nodes.find((x) => x.id === id);
+    if (!n || n.type === 'group') return;
+    const cx = n.x + (n.w || 240) / 2;
+    const cy = n.y + (n.h || 140) / 2;
+    const group = nodes.find(
+      (g) =>
+        g.type === 'group' &&
+        cx >= g.x &&
+        cx <= g.x + (g.w || GROUP_DEFAULT_W) &&
+        cy >= g.y &&
+        cy <= g.y + (g.h || GROUP_DEFAULT_H),
+    );
+    const groupId = group?.id;
+    if (n.groupId !== groupId) {
+      set((s) => ({ nodes: s.nodes.map((x) => (x.id === id ? { ...x, groupId } : x)) }));
+      saveWorkspaceDebounced(snapshot(get()));
+    }
+  },
+
+  toggleSnapToGrid: () => set((s) => ({ snapToGrid: !s.snapToGrid })),
+
+  commitHistory: () => {
+    set((s) => {
+      const top = s.history.past[s.history.past.length - 1];
+      if (top && top.nodes === s.nodes && top.edges === s.edges) return s;
+      const past = [...s.history.past, { nodes: s.nodes, edges: s.edges }];
+      return { history: { past: past.slice(-50), future: [] } };
+    });
+  },
+
+  undoCanvas: () => {
+    const { history, nodes, edges } = get();
+    const prev = history.past[history.past.length - 1];
+    if (!prev) return;
+    set({
+      nodes: prev.nodes,
+      edges: prev.edges,
+      history: {
+        past: history.past.slice(0, -1),
+        future: [...history.future, { nodes, edges }].slice(-50),
+      },
+    });
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  redoCanvas: () => {
+    const { history, nodes, edges } = get();
+    const next = history.future[history.future.length - 1];
+    if (!next) return;
+    set({
+      nodes: next.nodes,
+      edges: next.edges,
+      history: {
+        past: [...history.past, { nodes, edges }],
+        future: history.future.slice(0, -1),
+      },
+    });
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  removeNode: (id) => {
+    get().commitHistory();
+    set((s) => {
+      const removed = s.nodes.find((n) => n.id === id);
+      const nodes = s.nodes
+        .filter((n) => n.id !== id)
+        .map((n) => (removed?.type === 'group' && n.groupId === id ? { ...n, groupId: undefined } : n));
+      return {
+        nodes,
+        edges: s.edges.filter((e) => e.source !== id && e.target !== id),
+        nodeSizes: Object.fromEntries(Object.entries(s.nodeSizes).filter(([nodeId]) => nodeId !== id)),
+        nodeAnchors: Object.fromEntries(Object.entries(s.nodeAnchors).filter(([nodeId]) => nodeId !== id)),
+      };
+    });
     saveWorkspaceDebounced(snapshot(get()));
   },
 
@@ -782,6 +934,7 @@ export const useStore = create<StoreState>((set, get) => ({
     if (source === target) return;
     const exists = get().edges.some((e) => e.source === source && e.target === target);
     if (exists) return;
+    get().commitHistory();
     set((s) => ({
       edges: [...s.edges, { id: uid(), source, target, label: label?.trim() || undefined }],
     }));
@@ -798,7 +951,23 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   removeEdge: (id) => {
+    get().commitHistory();
     set((s) => ({ edges: s.edges.filter((e) => e.id !== id) }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  reanchorHighlightsForPage: (page, docId, pageData) => {
+    set((s) => ({
+      highlights: s.highlights.map((h) => {
+        if (h.page !== page) return h;
+        if ((h.docId || undefined) !== (docId || undefined)) return h;
+        const rects = reanchorText(h.text, pageData);
+        if (rects && rects.length) {
+          return { ...h, rects, rect: unionRects(rects), anchorStatus: 'approximate' as const };
+        }
+        return { ...h, anchorStatus: 'approximate' as const };
+      }),
+    }));
     saveWorkspaceDebounced(snapshot(get()));
   },
 
@@ -972,6 +1141,7 @@ export const useStore = create<StoreState>((set, get) => ({
       },
       docName: bundle.docName || s.docName,
       numPages: bundle.numPages || s.numPages,
+      history: { ...emptyHistory },
     }));
     saveWorkspaceDebounced(snapshot(get()));
   },

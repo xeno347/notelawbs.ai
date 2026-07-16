@@ -2,15 +2,68 @@ import type { RefObject } from 'react';
 import { Platform, type View } from 'react-native';
 import { captureRef } from 'react-native-view-shot';
 import ReactNativeBlobUtil from 'react-native-blob-util';
-import TextRecognition from '@react-native-ml-kit/text-recognition';
+
+/** ML Kit is device-linked only on iOS (simulator prebuilts are device-arm64). */
+type TextRecognitionModule = {
+  recognize: (uri: string) => Promise<{
+    text?: string;
+    blocks?: Array<{
+      text?: string;
+      frame?: { left?: number; top?: number; width?: number; height?: number; x?: number; y?: number; w?: number; h?: number };
+      lines?: Array<{
+        text?: string;
+        frame?: { left?: number; top?: number; width?: number; height?: number; x?: number; y?: number; w?: number; h?: number };
+        elements?: Array<{
+          text?: string;
+          frame?: { left?: number; top?: number; width?: number; height?: number; x?: number; y?: number; w?: number; h?: number };
+        }>;
+      }>;
+    }>;
+  }>;
+};
+
+function loadTextRecognition(): TextRecognitionModule | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require('@react-native-ml-kit/text-recognition').default as TextRecognitionModule;
+  } catch {
+    return null;
+  }
+}
+
+const TextRecognition = loadTextRecognition();
 
 export type OcrRect = { x: number; y: number; w: number; h: number };
 export type OcrElement = { text: string; rect: OcrRect };
 export type OcrLine = { text: string; rect: OcrRect; elements: OcrElement[] };
 export type OcrBlock = { text: string; rect: OcrRect; lines: OcrLine[] };
-export type OcrPageData = { text: string; blocks: OcrBlock[] };
+export type OcrQuality = { score: number; label: 'high' | 'medium' | 'low' };
+export type OcrPageData = { text: string; blocks: OcrBlock[]; quality: OcrQuality };
 
 const CAPTURE_WIDTH = 1200;
+
+/**
+ * Heuristic recognition-quality estimate derived from the OCR text itself.
+ * Google ML Kit's on-device Text Recognition API does not expose a real
+ * per-word/per-page confidence score, so this is a proxy (word length, alnum
+ * density, near-empty output) — good enough to flag a page as worth a manual
+ * retry, but it is NOT a calibrated confidence value from the recognizer.
+ */
+function estimateQuality(text: string): OcrQuality {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (!words.length) return { score: 0, label: 'low' };
+  const avgWordLen = words.reduce((a, w) => a + w.length, 0) / words.length;
+  const alnumRatio = (text.match(/[a-zA-Z0-9]/g)?.length || 0) / Math.max(1, text.length);
+  const shortWordRatio = words.filter((w) => w.length <= 1).length / words.length;
+  let score = 1;
+  if (avgWordLen < 2.2) score -= 0.35;
+  if (alnumRatio < 0.55) score -= 0.35;
+  if (shortWordRatio > 0.35) score -= 0.25;
+  if (words.length < 8) score -= 0.2;
+  score = Math.max(0, Math.min(1, score));
+  const label: OcrQuality['label'] = score >= 0.7 ? 'high' : score >= 0.4 ? 'medium' : 'low';
+  return { score, label };
+}
 
 /**
  * On-device OCR for a single rendered PDF page. Captures the currently-rendered
@@ -25,6 +78,7 @@ export async function recognizePage(
   pageAspect: number,
 ): Promise<OcrPageData> {
   if (!pageRef?.current) return emptyPage();
+  if (!TextRecognition) return emptyPage();
 
   let uri = '';
   try {
@@ -75,7 +129,8 @@ export async function recognizePage(
         };
       })
       .filter((block) => block.text && block.rect.w > 0 && block.rect.h > 0);
-    return { text: normalize(result?.text || ''), blocks };
+    const text = normalize(result?.text || '');
+    return { text, blocks, quality: estimateQuality(text) };
   } catch {
     return emptyPage();
   } finally {
@@ -106,18 +161,26 @@ function normalizeInline(text: string): string {
 }
 
 function normalizeFrame(
-  frame: { left: number; top: number; width: number; height: number } | undefined,
+  frame:
+    | { left?: number; top?: number; width?: number; height?: number; x?: number; y?: number; w?: number; h?: number }
+    | undefined,
   imageWidth: number,
   imageHeight: number,
 ): OcrRect {
   if (!frame) return { x: 0, y: 0, w: 0, h: 0 };
-  const x = clamp(frame.left / imageWidth);
-  const y = clamp(frame.top / imageHeight);
+  // Different platform/binding versions of the native module have used both
+  // {left,top,width,height} and {x,y,w,h} — accept either.
+  const left = frame.left ?? frame.x ?? 0;
+  const top = frame.top ?? frame.y ?? 0;
+  const width = frame.width ?? frame.w ?? 0;
+  const height = frame.height ?? frame.h ?? 0;
+  const x = clamp(left / imageWidth);
+  const y = clamp(top / imageHeight);
   return {
     x,
     y,
-    w: Math.max(0, Math.min(1 - x, frame.width / imageWidth)),
-    h: Math.max(0, Math.min(1 - y, frame.height / imageHeight)),
+    w: Math.max(0, Math.min(1 - x, width / imageWidth)),
+    h: Math.max(0, Math.min(1 - y, height / imageHeight)),
   };
 }
 
@@ -126,7 +189,7 @@ function clamp(value: number): number {
 }
 
 function emptyPage(): OcrPageData {
-  return { text: '', blocks: [] };
+  return { text: '', blocks: [], quality: { score: 0, label: 'low' } };
 }
 
 function cleanupTemp(path: string) {

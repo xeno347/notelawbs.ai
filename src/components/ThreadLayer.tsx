@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Canvas, Path, Circle, Skia, DashPathEffect, BlurMask } from '@shopify/react-native-skia';
-import { useStore } from '../store';
+import { useStore, type Highlight } from '../store';
 import { catStyle, useTheme } from '../theme';
 import { CARD_WIDTH } from './ExcerptCard';
 import { AI_CARD_WIDTH } from './AiCard';
@@ -44,6 +44,14 @@ export default function ThreadLayer() {
 
   const wrapRef = useRef<View>(null);
   const [layerOrigin, setLayerOrigin] = useState({ x: 0, y: 0 });
+
+  // O(1) lookups instead of `highlights.find()` per node — matters here since
+  // this runs on every pan/zoom commit (~30fps while gesturing).
+  const highlightById = useMemo(() => {
+    const m = new Map<string, Highlight>();
+    for (const h of highlights) m.set(h.id, h);
+    return m;
+  }, [highlights]);
 
   const measure = () =>
     wrapRef.current?.measureInWindow((x, y) => {
@@ -89,7 +97,7 @@ export default function ThreadLayer() {
     if (node.type !== 'excerpt') continue;
     const data = node.data as { highlightId?: string; category: string };
     if (!data.highlightId || !pdfFrame) continue;
-    const h = highlights.find((x) => x.id === data.highlightId);
+    const h = highlightById.get(data.highlightId);
     if (!h) continue;
     if (h.docId && h.docId !== activeDocId) continue;
 
@@ -124,7 +132,7 @@ export default function ThreadLayer() {
     let dashed = false;
 
     if (link.highlightId && pdfFrame) {
-      const h = highlights.find((x) => x.id === link.highlightId);
+      const h = highlightById.get(link.highlightId);
       if (h && (!h.docId || h.docId === activeDocId)) {
         const offPage = h.page !== currentPage;
         const anchor = offPage

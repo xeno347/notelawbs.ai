@@ -276,6 +276,34 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
     setOcrScanning(false);
   };
 
+  const [retryingOcr, setRetryingOcr] = useState(false);
+  const retryPageOcr = async () => {
+    const page = currentPage;
+    setRetryingOcr(true);
+    setOcrProcessingPage(page);
+    try {
+      const data = await recognizePage(pdfCaptureRef, aspect);
+      setOcrPageData(page, data);
+      useStore.getState().reanchorHighlightsForPage(page, useStore.getState().activeDocId || undefined, data);
+    } catch {
+      setOcrPageText(page, '');
+    } finally {
+      setRetryingOcr(false);
+    }
+  };
+
+  // Recomputed only when highlights/numPages actually change, not on every
+  // page turn or unrelated re-render (this used to recompute unconditionally).
+  const marginTicks = useMemo(
+    () =>
+      highlights.map((h) => ({
+        id: h.id,
+        color: catStyle(h.category).color,
+        top: Math.min(96, Math.max(2, ((h.page - 0.5) / Math.max(numPages, 1)) * 100)),
+      })),
+    [highlights, numPages],
+  );
+
   const frame = useMemo(() => {
     if (!container) return null;
     const cw = container.width;
@@ -551,6 +579,20 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
         </View>
       )}
 
+      {!!docUri &&
+        !ocr.scanning &&
+        !analyzing &&
+        ocr.layouts[currentPage]?.quality?.label === 'low' && (
+          <View style={s.qualityBanner}>
+            <Text style={s.qualityText}>
+              Text quality may be unreliable on this page — recognition looks weak.
+            </Text>
+            <TouchableOpacity onPress={retryPageOcr} disabled={retryingOcr}>
+              <Text style={s.qualityRetry}>{retryingOcr ? 'Retrying…' : 'Retry OCR'}</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
       <View
         ref={stageRef}
         style={s.stage}
@@ -559,19 +601,15 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
           publishFrame();
         }}>
         {/* Margin highlight ticks (LiquidText-style) */}
-        {docUri && frame && highlights.length > 0 && (
+        {docUri && frame && marginTicks.length > 0 && (
           <View style={s.marginRail} pointerEvents="box-none">
-            {highlights.map((h) => {
-              const cs = catStyle(h.category);
-              const top = ((h.page - 0.5) / Math.max(numPages, 1)) * 100;
-              return (
-                <TouchableOpacity
-                  key={h.id}
-                  style={[s.marginTick, { top: `${Math.min(96, Math.max(2, top))}%` as any, backgroundColor: cs.color }]}
-                  onPress={() => useStore.getState().jumpToHighlight(h.id)}
-                />
-              );
-            })}
+            {marginTicks.map((t) => (
+              <TouchableOpacity
+                key={t.id}
+                style={[s.marginTick, { top: `${t.top}%` as any, backgroundColor: t.color }]}
+                onPress={() => useStore.getState().jumpToHighlight(t.id)}
+              />
+            ))}
           </View>
         )}
 
@@ -954,6 +992,19 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     scanChipActive: { backgroundColor: p.aiSoft },
     scanChipDoc: { backgroundColor: p.tintSoft },
     scanChipText: { fontSize: 12, color: p.textMid, fontWeight: '600' },
+    qualityBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 10,
+      paddingHorizontal: 16,
+      paddingVertical: 9,
+      backgroundColor: p.surface2,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: p.separator,
+    },
+    qualityText: { flex: 1, fontSize: 12, color: p.textMid },
+    qualityRetry: { fontSize: 12, fontWeight: '800', color: p.tint },
     stage: { flex: 1, position: 'relative' },
     marginRail: {
       position: 'absolute',

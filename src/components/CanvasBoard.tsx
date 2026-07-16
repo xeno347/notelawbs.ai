@@ -15,6 +15,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Canvas, Path, Circle, Skia, Points, vec } from '@shopify/react-native-skia';
 import Svg, { Polyline } from 'react-native-svg';
+import { Undo2, Redo2, LayoutGrid } from 'lucide-react-native';
 import { useStore, type Stroke, type Edge } from '../store';
 import { useCollab, useViewerLocked } from '../collab/collabStore';
 import { useAnnotation, INK_SWATCHES } from '../annotationStore';
@@ -71,6 +72,11 @@ export default function CanvasBoard() {
   const focusNodeId = useStore((s) => s.focusNodeId);
   const clearFocusNode = useStore((s) => s.clearFocusNode);
   const setHoverNodeIdGlobal = useStore((s) => s.setHoverNodeId);
+  const history = useStore((s) => s.history);
+  const undoCanvas = useStore((s) => s.undoCanvas);
+  const redoCanvas = useStore((s) => s.redoCanvas);
+  const snapToGrid = useStore((s) => s.snapToGrid);
+  const toggleSnapToGrid = useStore((s) => s.toggleSnapToGrid);
   const sendCursor = useCollab((s) => s.sendCursor);
   const viewerLocked = useViewerLocked();
   const boardRef = useRef<View>(null);
@@ -148,12 +154,16 @@ export default function CanvasBoard() {
   // throttle (grid + card scale), while the shared values drive motion at 60fps.
   const commitDuringGesture = useCallback((next: { s: number; tx: number; ty: number }) => {
     tfRef.current = next;
-    // Threads + card drag read canvasTf from the store — keep it live every frame.
-    useStore.getState().setCanvasTf(next);
+    // Card *dragging* reads the live position straight off the shared values,
+    // so it stays 60fps regardless. Threads only need to track pan/zoom at a
+    // human-perceptible rate — writing to the store on every raw touch-move
+    // event (not just every 32ms) forced ThreadLayer to re-render and rescan
+    // nodes×highlights at touch-event frequency instead of ~30fps.
     const now = Date.now();
     if (now - commitTs.current > 32) {
       commitTs.current = now;
       setTf(next);
+      useStore.getState().setCanvasTf(next);
     }
   }, []);
 
@@ -399,6 +409,23 @@ export default function CanvasBoard() {
     [connectSource, addEdge, updateEdge],
   );
 
+  // Cull off-screen cards from mounting — edges/threads still use the full
+  // `nodes` list (cheap Skia draws), only the heavy per-card Views are culled.
+  const visibleNodes = useMemo(() => {
+    if (!container) return nodes;
+    const margin = 420;
+    const scl = Math.max(0.05, tf.s);
+    const viewLeft = -tf.tx / scl - margin;
+    const viewTop = -tf.ty / scl - margin;
+    const viewRight = viewLeft + container.width / scl + margin * 2;
+    const viewBottom = viewTop + container.height / scl + margin * 2;
+    return nodes.filter((n) => {
+      const w = n.w || nodeWidth(n.type);
+      const h = n.h || 160;
+      return n.x + w >= viewLeft && n.x <= viewRight && n.y + h >= viewTop && n.y <= viewBottom;
+    });
+  }, [nodes, container, tf]);
+
   const s = styles(p);
 
   return (
@@ -441,11 +468,13 @@ export default function CanvasBoard() {
             <View
               style={[StyleSheet.absoluteFill, { zIndex: 8 }]}
               pointerEvents={viewerLocked ? 'none' : 'box-none'}>
-              {nodes.map((n) => (
+              {visibleNodes.map((n) => (
                 <View
                   key={n.id}
                   pointerEvents="auto"
-                  style={{ zIndex: (n.z || 1) + 10 }}>
+                  // Groups always paint behind other card types so they read as
+                  // containers, regardless of their own z history.
+                  style={{ zIndex: n.type === 'group' ? (n.z || 1) : (n.z || 1) + 1000 }}>
                   {n.type === 'ai' ? (
                     <AiCard
                       node={n}
@@ -472,6 +501,30 @@ export default function CanvasBoard() {
             <CollabCursors scale={tf.s} />
           </Animated.View>
         </Animated.View>
+      </View>
+
+      <View style={s.historyCluster} pointerEvents="box-none">
+        <TouchableOpacity
+          accessibilityLabel="Undo"
+          disabled={!history.past.length}
+          style={[s.historyBtn, !history.past.length && s.historyBtnDisabled]}
+          onPress={undoCanvas}>
+          <Undo2 size={16} color={history.past.length ? p.text : p.textMuted} strokeWidth={2.2} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          accessibilityLabel="Redo"
+          disabled={!history.future.length}
+          style={[s.historyBtn, !history.future.length && s.historyBtnDisabled]}
+          onPress={redoCanvas}>
+          <Redo2 size={16} color={history.future.length ? p.text : p.textMuted} strokeWidth={2.2} />
+        </TouchableOpacity>
+        <View style={s.historySep} />
+        <TouchableOpacity
+          accessibilityLabel="Snap to grid"
+          style={[s.historyBtn, snapToGrid && s.historyBtnActive]}
+          onPress={toggleSnapToGrid}>
+          <LayoutGrid size={16} color={snapToGrid ? '#fff' : p.text} strokeWidth={2.2} />
+        </TouchableOpacity>
       </View>
 
       {nodes.length === 0 && ink.strokes.filter((st) => st.pdfPage == null).length === 0 && (
@@ -629,6 +682,32 @@ const styles = (p: ReturnType<typeof getPalette>) =>
   StyleSheet.create({
     root: { flex: 1, backgroundColor: p.bg },
     board: { flex: 1, overflow: 'hidden' },
+    historyCluster: {
+      position: 'absolute',
+      top: 12,
+      left: 12,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 2,
+      paddingHorizontal: 4,
+      paddingVertical: 4,
+      borderRadius: RADIUS.pill,
+      backgroundColor: p.surface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: p.border,
+      zIndex: 50,
+      ...ELEVATION.float,
+    },
+    historyBtn: {
+      width: 32,
+      height: 32,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: RADIUS.pill,
+    },
+    historyBtnDisabled: { opacity: 0.4 },
+    historyBtnActive: { backgroundColor: p.tint },
+    historySep: { width: 1, height: 20, backgroundColor: p.border, marginHorizontal: 2 },
     emptyHint: {
       position: 'absolute',
       top: '28%',

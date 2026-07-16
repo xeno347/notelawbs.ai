@@ -127,10 +127,12 @@ function Workspace() {
         onPanResponderRelease: () => {
           dragActive.value = 0;
           useStore.getState().bumpLayoutEpoch();
+          setSetting('splitRatio', String(splitRatio.value)).catch(() => {});
         },
         onPanResponderTerminate: () => {
           dragActive.value = 0;
           useStore.getState().bumpLayoutEpoch();
+          setSetting('splitRatio', String(splitRatio.value)).catch(() => {});
         },
       }),
     [splitRatio, wsWidthSV, dragActive],
@@ -145,6 +147,19 @@ function Workspace() {
     getSetting('onboarded').then((v) => {
       if (v !== '1') setShowOnboarding(true);
     });
+  }, []);
+
+  // Restore the reader/canvas split ratio from the last session (layout
+  // preference, not per-project — matches how `threadsOn` behaves).
+  useEffect(() => {
+    getSetting('splitRatio').then((v) => {
+      const parsed = v ? parseFloat(v) : NaN;
+      if (Number.isFinite(parsed) && parsed >= 0.28 && parsed <= 0.72) {
+        splitRatio.value = parsed;
+        ratioStart.current = parsed;
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

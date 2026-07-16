@@ -60,7 +60,7 @@ function buildCandidates(pages: Record<number, OcrPageData>): Candidate[] {
         block.text.length > 900
           ? chunkLongBlock(block)
           : (() => {
-              const lines = refinedLines({ text: block.text, blocks: [block] });
+              const lines = refinedLines({ blocks: [block] });
               const rects = lines.map((line) => line.rect);
               return [
                 {
@@ -93,7 +93,7 @@ function buildCandidates(pages: Record<number, OcrPageData>): Candidate[] {
 function chunkLongBlock(
   block: OcrBlock,
 ): Array<{ text: string; rect: OcrRect; rects: OcrRect[] }> {
-  const lines = refinedLines({ text: block.text, blocks: [block] });
+  const lines = refinedLines({ blocks: [block] });
   if (lines.length < 3) {
     const rects = lines.map((line) => line.rect);
     return [{ text: block.text, rect: rects.length ? unionRects(rects) : block.rect, rects: rects.length ? rects : [block.rect] }];

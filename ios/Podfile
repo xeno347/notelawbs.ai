@@ -58,13 +58,55 @@ target 'LitNotesCanvas' do
       # :ccache_enabled => true
     )
 
-    # NOTE: GoogleMLKit's MLImage/MLKitVision .framework binaries have arm64 +
-    # x86_64 slices, but the arm64 slice is device-only ("built for iOS", not
-    # "iOS-simulator") — confirmed via a failed link ("but linking in object
-    # file ... built for 'iOS'") after trying to clear CocoaPods' default
-    # EXCLUDED_ARCHS[sdk=iphonesimulator*]=arm64 here. That default is correct,
-    # not stale — leave it alone. Simulator builds/runs must target x86_64
-    # (Rosetta on Apple Silicon); real device builds are natively arm64 and
-    # unaffected. See project-litnotes-prd memory / plan notes.
+    # Apple Silicon requires arm64 simulator builds. Xcode 26 no longer
+    # surfaces usable x86_64 simulator destinations, so CocoaPods' default
+    # EXCLUDED_ARCHS[sdk=iphonesimulator*]=arm64 must be cleared — except for
+    # Google ML Kit pods, whose prebuilt arm64 slices are device-only.
+    mlkit_targets = %w[
+      RNMLKitTextRecognition
+      MLImage
+      MLKitCommon
+      MLKitVision
+      MLKitTextRecognition
+      MLKitTextRecognitionCommon
+      MLKitTextRecognitionChinese
+      MLKitTextRecognitionJapanese
+      MLKitTextRecognitionKorean
+      MLKitTextRecognitionDevanagari
+      GoogleMLKit
+    ]
+    installer.pods_project.targets.each do |target|
+      target.build_configurations.each do |config|
+        if mlkit_targets.include?(target.name)
+          config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64 x86_64'
+        else
+          config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = ''
+        end
+      end
+    end
+    Dir.glob(File.join(installer.sandbox.root, 'Target Support Files', '**', '*.xcconfig')).each do |path|
+      contents = File.read(path)
+      new_contents = contents.gsub(
+        /^EXCLUDED_ARCHS\[sdk=iphonesimulator\*\]\s*=.*$/,
+        'EXCLUDED_ARCHS[sdk=iphonesimulator*] ='
+      )
+      File.write(path, new_contents) if new_contents != contents
+    end
+
+    # Strip ML Kit from the app's simulator link line (device builds keep OCR).
+    # Do NOT keep $(inherited) here — it would re-pull the base OTHER_LDFLAGS
+    # (with ML Kit) and defeat the filter.
+    Dir.glob(File.join(installer.sandbox.root, 'Target Support Files', 'Pods-LitNotesCanvas', '*.xcconfig')).each do |path|
+      contents = File.read(path)
+      next unless contents =~ /^OTHER_LDFLAGS = (.*)$/
+      flags = Regexp.last_match(1)
+      contents = contents.gsub(/^OTHER_LDFLAGS\[sdk=iphonesimulator\*\] = .*$\n?/, '')
+      sim_flags = flags
+        .gsub(/\$\(inherited\)\s*/, '')
+        .gsub(/-l"RNMLKitTextRecognition"\s*/, '')
+        .gsub(/-framework "MLImage"\s*/, '')
+        .gsub(/-framework "MLKit[^"]*"\s*/, '')
+      File.write(path, contents.rstrip + "\nOTHER_LDFLAGS[sdk=iphonesimulator*] = #{sim_flags}\n")
+    end
   end
 end

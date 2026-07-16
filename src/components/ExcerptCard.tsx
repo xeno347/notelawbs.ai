@@ -30,8 +30,12 @@ function ExcerptCard({
   const setHoverNodeId = useStore((s) => s.setHoverNodeId);
   const setNodeSize = useStore((s) => s.setNodeSize);
   const setNodeAnchor = useStore((s) => s.setNodeAnchor);
-  const anchorRef = useRef<View>(null);
+  const commitHistory = useStore((s) => s.commitHistory);
+  const assignNodeGroupByPosition = useStore((s) => s.assignNodeGroupByPosition);
   const data = node.data as ExcerptData;
+  const highlight = useStore((s) => (data.highlightId ? s.highlights.find((h) => h.id === data.highlightId) : undefined));
+  const isApprox = highlight?.anchorStatus === 'approximate';
+  const anchorRef = useRef<View>(null);
   const cs = catStyle(data.category);
   const startRef = useRef({ x: 0, y: 0, w: CARD_WIDTH, h: 140 });
   const isSource = connectSource === node.id;
@@ -69,6 +73,7 @@ function ExcerptCard({
             w: n?.w || CARD_WIDTH,
             h: n?.h || useStore.getState().nodeSizes[node.id]?.h || 140,
           };
+          commitHistory();
           bringNodeToFront(node.id);
           setHoverNodeId(node.id);
         },
@@ -79,6 +84,7 @@ function ExcerptCard({
         onPanResponderRelease: () => {
           setHoverNodeId(null);
           publishAnchor();
+          assignNodeGroupByPosition(node.id);
         },
         onPanResponderTerminate: () => {
           setHoverNodeId(null);
@@ -86,7 +92,7 @@ function ExcerptCard({
       }),
     // Intentionally omit node.x/y — grant reads live position from the store.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [node.id, moveNode, bringNodeToFront, setHoverNodeId, publishAnchor],
+    [node.id, moveNode, bringNodeToFront, setHoverNodeId, publishAnchor, commitHistory, assignNodeGroupByPosition],
   );
 
   const resizePan = useMemo(
@@ -103,6 +109,7 @@ function ExcerptCard({
             w: n?.w || CARD_WIDTH,
             h: n?.h || useStore.getState().nodeSizes[node.id]?.h || 140,
           };
+          commitHistory();
           bringNodeToFront(node.id);
           setHoverNodeId(node.id);
         },
@@ -116,11 +123,11 @@ function ExcerptCard({
         },
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [node.id, resizeNode, bringNodeToFront, setHoverNodeId, publishAnchor],
+    [node.id, resizeNode, bringNodeToFront, setHoverNodeId, publishAnchor, commitHistory],
   );
 
   const s = styles(p);
-  const cite = `—${(data.docName || 'Document').replace(/\.pdf$/i, '')}, p.${data.page}`;
+  const cite = `—${(data.docName || 'Document').replace(/\.pdf$/i, '')}, p.${data.page}${isApprox ? ' ≈' : ''}`;
   const heightStyle = node.h ? { height: node.h } : null;
 
   return (

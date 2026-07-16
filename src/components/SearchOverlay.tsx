@@ -4,7 +4,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from '@react-native-community/blur';
 import { useStore } from '../store';
 import { getPalette, useTheme, catStyle, SERIF, RADIUS, ELEVATION } from '../theme';
-import { buildSearchIndex, searchIndex, type SearchResult, type SearchHitKind } from '../search/searchIndex';
+import { buildSearchIndex, searchIndex, type SearchHit, type SearchResult, type SearchHitKind } from '../search/searchIndex';
+
+type Scope = 'all' | 'page' | 'canvas';
+const SCOPES: Array<{ key: Scope; label: string }> = [
+  { key: 'all', label: 'Everything' },
+  { key: 'page', label: 'This page' },
+  { key: 'canvas', label: 'Notes & canvas' },
+];
+const CANVAS_KINDS: SearchHitKind[] = ['excerpt', 'ai', 'note', 'group'];
 
 const KIND_LABEL: Record<SearchHitKind, string> = {
   highlight: 'Highlight',
@@ -37,17 +45,24 @@ export default function SearchOverlay({ onClose }: { onClose: () => void }) {
   const nodes = useStore((s) => s.nodes);
   const ocrPages = useStore((s) => s.ocr.pages);
   const bookmarks = useStore((s) => s.bookmarks);
+  const currentPage = useStore((s) => s.currentPage);
   const jumpToHighlight = useStore((s) => s.jumpToHighlight);
   const jumpToPage = useStore((s) => s.jumpToPage);
   const requestFocusNode = useStore((s) => s.requestFocusNode);
 
   const [query, setQuery] = useState('');
+  const [scope, setScope] = useState<Scope>('all');
 
   const index = useMemo(
     () => buildSearchIndex({ highlights, nodes, ocrPages, bookmarks }),
     [highlights, nodes, ocrPages, bookmarks],
   );
-  const results = useMemo(() => searchIndex(index, query), [index, query]);
+  const scopedIndex = useMemo(() => {
+    if (scope === 'page') return index.filter((h: SearchHit) => h.page === currentPage);
+    if (scope === 'canvas') return index.filter((h: SearchHit) => CANVAS_KINDS.includes(h.kind));
+    return index;
+  }, [index, scope, currentPage]);
+  const results = useMemo(() => searchIndex(scopedIndex, query), [scopedIndex, query]);
   const firstTerm = query.trim().split(/\s+/)[0] || '';
   const scannedPages = Object.keys(ocrPages).length;
 
@@ -88,6 +103,20 @@ export default function SearchOverlay({ onClose }: { onClose: () => void }) {
             onChangeText={setQuery}
             returnKeyType="search"
           />
+
+          <View style={s.scopeRow}>
+            {SCOPES.map((sc) => {
+              const active = scope === sc.key;
+              return (
+                <TouchableOpacity
+                  key={sc.key}
+                  style={[s.scopeChip, active && s.scopeChipActive]}
+                  onPress={() => setScope(sc.key)}>
+                  <Text style={[s.scopeChipText, active && s.scopeChipTextActive]}>{sc.label}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
 
           {!docName ? (
             <Text style={s.hint}>Open a PDF to start building a searchable workspace.</Text>
@@ -158,6 +187,18 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       fontSize: 15,
       marginBottom: 14,
     },
+    scopeRow: { flexDirection: 'row', gap: 6, marginBottom: 12 },
+    scopeChip: {
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: RADIUS.pill,
+      backgroundColor: p.surface2,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: p.border,
+    },
+    scopeChipActive: { backgroundColor: p.tintSoft, borderColor: p.tint },
+    scopeChipText: { fontSize: 12, color: p.textMid, fontWeight: '600' },
+    scopeChipTextActive: { color: p.tint, fontWeight: '800' },
     hint: { color: p.textMuted, fontSize: 13, lineHeight: 20, textAlign: 'center', paddingVertical: 24, paddingHorizontal: 8 },
     list: { maxHeight: 440 },
     row: {

@@ -13,6 +13,8 @@ function NoteCard({ node }: { node: FlowNode }) {
   const removeNode = useStore((s) => s.removeNode);
   const updateNodeData = useStore((s) => s.updateNodeData);
   const setHoverNodeId = useStore((s) => s.setHoverNodeId);
+  const commitHistory = useStore((s) => s.commitHistory);
+  const assignNodeGroupByPosition = useStore((s) => s.assignNodeGroupByPosition);
   const data = node.data as NoteData;
   const origin = useRef({ x: node.x, y: node.y });
   const width = node.w || NOTE_CARD_WIDTH;
@@ -29,6 +31,7 @@ function NoteCard({ node }: { node: FlowNode }) {
         onPanResponderGrant: () => {
           const n = useStore.getState().nodes.find((x) => x.id === node.id);
           origin.current = { x: n?.x ?? node.x, y: n?.y ?? node.y };
+          commitHistory();
           bringNodeToFront(node.id);
           setHoverNodeId(node.id);
         },
@@ -36,11 +39,14 @@ function NoteCard({ node }: { node: FlowNode }) {
           const s = Math.max(0.05, useStore.getState().canvasTf.s);
           moveNode(node.id, origin.current.x + g.dx / s, origin.current.y + g.dy / s);
         },
-        onPanResponderRelease: () => setHoverNodeId(null),
+        onPanResponderRelease: () => {
+          setHoverNodeId(null);
+          assignNodeGroupByPosition(node.id);
+        },
         onPanResponderTerminate: () => setHoverNodeId(null),
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [node.id, moveNode, bringNodeToFront, setHoverNodeId],
+    [node.id, moveNode, bringNodeToFront, setHoverNodeId, commitHistory, assignNodeGroupByPosition],
   );
 
   const s = styles(p);

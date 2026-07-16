@@ -1,4 +1,4 @@
-import type { OcrElement, OcrLine, OcrPageData, OcrRect } from './ocrService';
+import type { OcrBlock, OcrElement, OcrLine, OcrPageData, OcrRect } from './ocrService';
 import type { Rect } from '../store';
 
 export type SelectionHit = {
@@ -131,7 +131,7 @@ export function handleAnchors(
 }
 
 /** Flatten OCR into tight, splittable lines (tables often arrive as one tall ML Kit line). */
-export function refinedLines(page: OcrPageData): OcrLine[] {
+export function refinedLines(page: { blocks: OcrBlock[] }): OcrLine[] {
   const lines: OcrLine[] = [];
   page.blocks.forEach((block) => {
     block.lines.forEach((line) => {
@@ -221,7 +221,7 @@ export function paragraphSelection(page: OcrPageData, x: number, y: number): Sel
   );
   if (!block) return { ...anchor, kind: 'paragraph' };
 
-  const lines = refinedLines({ text: block.text, blocks: [block] });
+  const lines = refinedLines({ blocks: [block] });
   const anchorIndex = lines.findIndex((line) => rectOverlap(line.rect, anchor.rect) > 0.35);
   if (anchorIndex < 0) return { ...anchor, kind: 'paragraph' };
 
