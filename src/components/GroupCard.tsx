@@ -1,6 +1,6 @@
 import React, { useMemo, useRef } from 'react';
 import { View, TextInput, TouchableOpacity, StyleSheet, PanResponder } from 'react-native';
-import { X } from 'lucide-react-native';
+import { X, GripHorizontal } from 'lucide-react-native';
 import { useStore, type FlowNode, type GroupData } from '../store';
 import { getPalette, useTheme, RADIUS, ELEVATION } from '../theme';
 
@@ -33,10 +33,7 @@ function GroupCard({ node }: { node: FlowNode }) {
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: (_e, g) =>
-          g.numberActiveTouches === 1 && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
-        onMoveShouldSetPanResponderCapture: (_e, g) =>
-          g.numberActiveTouches === 1 && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
+        onMoveShouldSetPanResponder: () => true,
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: () => {
           const all = useStore.getState().nodes;
@@ -93,7 +90,10 @@ function GroupCard({ node }: { node: FlowNode }) {
   return (
     <View style={[s.card, { left: node.x, top: node.y, width, height, zIndex: node.z || 1 }]}>
       <View style={s.body} pointerEvents="none" />
-      <View style={s.titleBar} {...pan.panHandlers}>
+      <View style={s.titleBar}>
+        <View style={s.dragGrip} {...pan.panHandlers} accessibilityLabel="Move section">
+          <GripHorizontal size={16} color={p.textMuted} strokeWidth={2.2} />
+        </View>
         <TextInput
           value={data.title}
           onChangeText={(title) => updateNodeData(node.id, { title })}
@@ -137,10 +137,17 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       borderLeftColor: p.iris,
       borderWidth: 1,
       borderColor: p.border,
-      paddingVertical: 10,
-      paddingHorizontal: 14,
+      paddingVertical: 8,
+      paddingLeft: 6,
       paddingRight: 28,
+      gap: 6,
       ...ELEVATION.float,
+    },
+    dragGrip: {
+      width: 28,
+      height: 32,
+      alignItems: 'center',
+      justifyContent: 'center',
     },
     del: { position: 'absolute', top: 8, right: 8 },
     input: {
@@ -149,6 +156,7 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       color: p.text,
       padding: 0,
       minWidth: 120,
+      flexShrink: 1,
     },
     resizeHit: {
       position: 'absolute',

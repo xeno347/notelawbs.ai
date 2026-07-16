@@ -4,9 +4,19 @@ import { getSupabase, isSupabaseConfigured } from '../services/supabase';
 import { useStore, type CanvasSync } from '../store';
 import { setPersistListener } from '../storage';
 import { useAuth } from '../auth/authStore';
+import {
+  buildInviteLink,
+  inviteIsFresh,
+  mintInvite,
+  parseInviteUrl,
+  rememberRoom,
+  roleFromInvite,
+  saveRoomPolicy,
+  type InvitePayload,
+} from './inviteTokens';
 
 export type CollabRole = 'owner' | 'editor' | 'viewer';
-export type CollabAccess = 'edit' | 'view';
+export type CollabAccess = import('./inviteTokens').CollabAccess;
 export type CollabStatus = 'off' | 'connecting' | 'live' | 'error';
 
 export type Peer = {
@@ -14,7 +24,7 @@ export type Peer = {
   name: string;
   color: string;
   role: CollabRole;
-  x: number | null; // cursor in canvas/world coordinates
+  x: number | null;
   y: number | null;
   ts: number;
 };
@@ -36,20 +46,11 @@ function shortId(len = 6): string {
 
 export const JOIN_URL_PREFIX = 'litnotes://join/';
 
-function buildShareLink(roomId: string, access: CollabAccess): string {
-  return `${JOIN_URL_PREFIX}${roomId}?a=${access}`;
-}
-
-export function parseJoinUrl(url: string): { roomId: string; access: CollabAccess } | null {
-  if (!url || !url.includes('/join/')) return null;
-  try {
-    const after = url.split('/join/')[1];
-    const [roomId, query] = after.split('?');
-    const access: CollabAccess = /a=view/.test(query || '') ? 'view' : 'edit';
-    return roomId ? { roomId: roomId.trim(), access } : null;
-  } catch {
-    return null;
-  }
+/** @deprecated Prefer parseInviteUrl — kept for App.tsx deep-link callers. */
+export function parseJoinUrl(url: string): { roomId: string; access: CollabAccess; token?: string } | null {
+  const invite = parseInviteUrl(url);
+  if (!invite) return null;
+  return { roomId: invite.roomId, access: invite.access, token: invite.token || undefined };
 }
 
 type CollabState = {
@@ -62,9 +63,13 @@ type CollabState = {
   selfName: string;
   peers: Record<string, Peer>;
   shareLink: string | null;
+  /** Current session invite token (owner). */
+  inviteToken: string | null;
+  inviteExp: number | null;
 
   startShare: (access?: CollabAccess) => Promise<void>;
-  join: (roomId: string, access?: CollabAccess) => Promise<void>;
+  join: (roomIdOrUrl: string, access?: CollabAccess) => Promise<void>;
+  joinInvite: (invite: InvitePayload) => Promise<void>;
   setAccess: (access: CollabAccess) => Promise<void>;
   leave: () => Promise<void>;
   sendCursor: (x: number, y: number) => void;
@@ -125,9 +130,14 @@ function refreshPeersFromPresence() {
   useCollab.setState({ peers: next });
 }
 
-async function connect(roomId: string, role: CollabRole, access: CollabAccess) {
+async function connect(
+  roomId: string,
+  role: CollabRole,
+  access: CollabAccess,
+  invite: InvitePayload | null,
+) {
   if (!isSupabaseConfigured()) {
-    useCollab.setState({ status: 'error', error: 'Connect Supabase in Settings to share live.' });
+    useCollab.setState({ status: 'error', error: 'Connect Supabase in Settings → Advanced to share live.' });
     return;
   }
   const sb = getSupabase();
@@ -136,8 +146,21 @@ async function connect(roomId: string, role: CollabRole, access: CollabAccess) {
     return;
   }
 
+  // Tear down any previous channel before joining another room.
+  if (channel) {
+    try {
+      await channel.unsubscribe();
+    } catch {
+      /* noop */
+    }
+    sb.removeChannel(channel);
+    channel = null;
+  }
+
   const { id, name } = selfIdentity();
   const color = colorFor(id);
+  const link = invite ? buildInviteLink(invite) : `${JOIN_URL_PREFIX}${roomId}?a=${access}`;
+
   useCollab.setState({
     status: 'connecting',
     error: null,
@@ -147,7 +170,9 @@ async function connect(roomId: string, role: CollabRole, access: CollabAccess) {
     selfId: id,
     selfName: name,
     peers: {},
-    shareLink: buildShareLink(roomId, access),
+    shareLink: link,
+    inviteToken: invite?.token || null,
+    inviteExp: invite?.exp || null,
   });
   lastSyncedJson = '';
 
@@ -176,7 +201,6 @@ async function connect(roomId: string, role: CollabRole, access: CollabAccess) {
   ch.on('presence', { event: 'sync' }, refreshPeersFromPresence);
   ch.on('presence', { event: 'join' }, () => {
     refreshPeersFromPresence();
-    // Someone new arrived — if we can edit, push current state so they catch up.
     if (useCollab.getState().canEdit()) setTimeout(() => broadcastSnapshot(true), 250);
   });
   ch.on('presence', { event: 'leave' }, refreshPeersFromPresence);
@@ -185,9 +209,22 @@ async function connect(roomId: string, role: CollabRole, access: CollabAccess) {
 
   ch.subscribe((status) => {
     if (status === 'SUBSCRIBED') {
-      ch.track({ id, name, color, role });
+      ch.track({
+        id,
+        name,
+        color,
+        role,
+        token: invite?.token || '',
+      });
       useCollab.setState({ status: 'live' });
-      // Editors/owners publish; late joiners ask for the current state.
+      void rememberRoom({
+        roomId,
+        access,
+        title: useStore.getState().projectTitle || useStore.getState().docName || `Room ${roomId}`,
+        shareLink: link,
+        token: invite?.token,
+        exp: invite?.exp,
+      });
       if (useCollab.getState().canEdit()) {
         broadcastSnapshot(true);
         setPersistListener(() => {
@@ -212,21 +249,78 @@ export const useCollab = create<CollabState>((set, get) => ({
   selfName: '',
   peers: {},
   shareLink: null,
+  inviteToken: null,
+  inviteExp: null,
 
   startShare: async (access = 'edit') => {
     const roomId = shortId(6);
-    await connect(roomId, 'owner', access);
+    const invite = mintInvite(roomId, access);
+    await saveRoomPolicy({
+      roomId,
+      access,
+      token: invite.token,
+      exp: invite.exp,
+      createdAt: Date.now(),
+    });
+    await connect(roomId, 'owner', access, invite);
   },
 
-  join: async (roomId, access = 'edit') => {
-    await connect(roomId.trim().toUpperCase(), access === 'view' ? 'viewer' : 'editor', access);
+  join: async (roomIdOrUrl, access = 'edit') => {
+    const asUrl = roomIdOrUrl.includes('/join/') ? parseInviteUrl(roomIdOrUrl) : null;
+    if (asUrl) {
+      await get().joinInvite(asUrl);
+      return;
+    }
+    const roomId = roomIdOrUrl.trim().toUpperCase();
+    if (!roomId) {
+      set({ status: 'error', error: 'Enter a room code or paste an invite link.' });
+      return;
+    }
+    // Legacy code-only join — role is self-selected.
+    await connect(roomId, access === 'view' ? 'viewer' : 'editor', access, null);
+  },
+
+  joinInvite: async (invite) => {
+    if (!inviteIsFresh(invite)) {
+      set({ status: 'error', error: 'This invite link has expired. Ask for a new one.' });
+      return;
+    }
+    if (!invite.token) {
+      // Legacy link without token
+      await connect(invite.roomId, invite.access === 'view' ? 'viewer' : 'editor', invite.access, invite);
+      return;
+    }
+    const access = roleFromInvite(invite);
+    await connect(invite.roomId, access === 'view' ? 'viewer' : 'editor', access, invite);
   },
 
   setAccess: async (access) => {
-    const { roomId, status } = get();
-    set({ access, shareLink: roomId ? buildShareLink(roomId, access) : null });
-    // Re-broadcast link only; role changes for existing peers apply on rejoin.
-    if (status === 'live') { /* access affects future joiners */ }
+    const { roomId, status, inviteToken, inviteExp } = get();
+    if (!roomId) {
+      set({ access });
+      return;
+    }
+    const invite = mintInvite(roomId, access);
+    // Preserve remaining TTL window when regenerating for a new access level.
+    if (inviteExp && inviteExp > Date.now()) {
+      invite.exp = inviteExp;
+    }
+    // Keep a stable token if we already have one for this live session.
+    if (inviteToken) invite.token = inviteToken;
+    await saveRoomPolicy({
+      roomId,
+      access,
+      token: invite.token,
+      exp: invite.exp,
+      createdAt: Date.now(),
+    });
+    set({
+      access,
+      shareLink: buildInviteLink(invite),
+      inviteToken: invite.token,
+      inviteExp: invite.exp,
+    });
+    void status;
   },
 
   leave: async () => {
@@ -249,13 +343,15 @@ export const useCollab = create<CollabState>((set, get) => ({
       role: 'viewer',
       peers: {},
       shareLink: null,
+      inviteToken: null,
+      inviteExp: null,
     });
   },
 
   sendCursor: (x, y) => {
     if (!channel || get().status !== 'live') return;
     const now = Date.now();
-    if (now - cursorThrottle < 45) return; // ~22fps
+    if (now - cursorThrottle < 45) return;
     cursorThrottle = now;
     channel.send({ type: 'broadcast', event: 'cursor', payload: { id: get().selfId, x, y } });
   },

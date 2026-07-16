@@ -6,12 +6,23 @@ export type CategoryKey = 'key_fact' | 'adverse' | 'favorable' | 'procedural' | 
 
 export type Category = { label: string; color: string; soft: string };
 
+/**
+ * Colorblind-safe palette: adverse/favorable previously sat on the red↔green
+ * confusion axis (indistinguishable under protanopia/deuteranopia — the most
+ * common form — which is unacceptable for a legal categorization where mixing
+ * up "adverse" and "favorable" is consequential). Adverse is now vermillion
+ * (orange-red) and favorable is steel blue, separated on the blue channel
+ * rather than the red-green channel; procedural moved to a neutral slate so
+ * it doesn't collide with favorable's new blue. Every category is also always
+ * paired with its text label wherever it's rendered, so color is never the
+ * only signal.
+ */
 export const CATEGORIES: Record<CategoryKey, Category> = {
-  key_fact: { label: 'Key fact', color: '#D4A73B', soft: 'rgba(226,188,84,0.42)' },
-  adverse: { label: 'Adverse', color: '#D1594A', soft: 'rgba(209,89,74,0.30)' },
-  favorable: { label: 'Favorable', color: '#4CA671', soft: 'rgba(76,166,113,0.32)' },
-  procedural: { label: 'Procedural', color: '#5090C9', soft: 'rgba(80,144,201,0.30)' },
-  ratio: { label: 'Ratio', color: '#9270CC', soft: 'rgba(146,112,204,0.30)' },
+  key_fact: { label: 'Key fact', color: '#D4A73B', soft: 'rgba(226,188,84,0.34)' },
+  adverse: { label: 'Adverse', color: '#C1440E', soft: 'rgba(193,68,14,0.28)' },
+  favorable: { label: 'Favorable', color: '#2E6DA4', soft: 'rgba(46,109,164,0.28)' },
+  procedural: { label: 'Procedural', color: '#5B6B7C', soft: 'rgba(91,107,124,0.28)' },
+  ratio: { label: 'Ratio', color: '#9270CC', soft: 'rgba(146,112,204,0.28)' },
 };
 
 export const CATEGORY_KEYS = Object.keys(CATEGORIES) as CategoryKey[];

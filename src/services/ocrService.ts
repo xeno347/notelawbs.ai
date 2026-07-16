@@ -2,6 +2,7 @@ import type { RefObject } from 'react';
 import { Platform, type View } from 'react-native';
 import { captureRef } from 'react-native-view-shot';
 import ReactNativeBlobUtil from 'react-native-blob-util';
+import { canUseCloudOcr, recognizePageCloud } from './cloudOcrService';
 
 /** ML Kit is device-linked only on iOS (simulator prebuilts are device-arm64). */
 type TextRecognitionModule = {
@@ -65,6 +66,14 @@ function estimateQuality(text: string): OcrQuality {
   return { score, label };
 }
 
+export type CapturedPageImage = {
+  path: string;
+  fileUri: string;
+  base64: string;
+  width: number;
+  height: number;
+};
+
 /**
  * On-device OCR for a single rendered PDF page. Captures the currently-rendered
  * page view as an image, runs ML Kit text recognition on it, and preserves ML
@@ -76,38 +85,97 @@ function estimateQuality(text: string): OcrQuality {
 export async function recognizePage(
   pageRef: RefObject<View | null>,
   pageAspect: number,
+  opts?: { width?: number },
 ): Promise<OcrPageData> {
-  if (!pageRef?.current) return emptyPage();
-  if (!TextRecognition) return emptyPage();
+  const captured = await capturePageImage(pageRef, pageAspect, opts);
+  if (!captured) return emptyPage();
+  try {
+    return await recognizeCapturedOnDevice(captured);
+  } finally {
+    cleanupTemp(captured.path);
+  }
+}
 
+/** Run OCR on an already-captured page image (cloud preferred when configured). */
+export async function recognizeCapturedAuto(
+  captured: CapturedPageImage,
+  opts?: { preferCloud?: boolean },
+): Promise<{ data: OcrPageData; engine: 'cloud' | 'device' }> {
+  const preferCloud = opts?.preferCloud !== false;
+  try {
+    if (preferCloud) {
+      try {
+        if (await canUseCloudOcr()) {
+          const data = await recognizePageCloud(captured.base64, captured.width, captured.height);
+          if (data.text.trim() || data.blocks.length) {
+            return { data, engine: 'cloud' };
+          }
+        }
+      } catch {
+        /* fall through */
+      }
+    }
+    const data = await recognizeCapturedOnDevice(captured);
+    return { data, engine: 'device' };
+  } finally {
+    cleanupTemp(captured.path);
+  }
+}
+
+/** Capture + prefer cloud OCR when configured; fall back to on-device ML Kit. */
+export async function recognizePageAuto(
+  pageRef: RefObject<View | null>,
+  pageAspect: number,
+  opts?: { width?: number; preferCloud?: boolean },
+): Promise<{ data: OcrPageData; engine: 'cloud' | 'device' }> {
+  const captured = await capturePageImage(pageRef, pageAspect, opts);
+  if (!captured) return { data: emptyPage(), engine: 'device' };
+  return recognizeCapturedAuto(captured, opts);
+}
+
+/** Screenshot the page view for on-device or cloud OCR. */
+export async function capturePageImage(
+  pageRef: RefObject<View | null>,
+  pageAspect: number,
+  opts?: { width?: number },
+): Promise<CapturedPageImage | null> {
+  if (!pageRef?.current) return null;
+  const width = opts?.width ?? CAPTURE_WIDTH;
   let uri = '';
   try {
     uri = await captureRef(pageRef, {
       format: 'jpg',
-      quality: 0.85,
+      quality: 0.82,
       result: 'tmpfile',
-      // Cap capture size — full-retina tablet pages are huge and slow ML Kit down.
-      width: CAPTURE_WIDTH,
+      width,
     });
   } catch {
-    return emptyPage();
+    return null;
   }
-
-  if (!uri || typeof uri !== 'string') return emptyPage();
-
+  if (!uri || typeof uri !== 'string') return null;
   const fileUri = toFileUri(uri);
   const path = fileUri.replace(/^file:\/\//, '');
-
   try {
     const exists = await ReactNativeBlobUtil.fs.exists(path);
-    if (!exists) return emptyPage();
+    if (!exists) return null;
     const stat = await ReactNativeBlobUtil.fs.stat(path);
-    if (!stat || Number(stat.size) < 64) return emptyPage();
+    if (!stat || Number(stat.size) < 64) return null;
+    const base64 = await ReactNativeBlobUtil.fs.readFile(path, 'base64');
+    if (!base64 || typeof base64 !== 'string') return null;
+    const height = width / Math.max(0.1, pageAspect || 0.72);
+    return { path, fileUri, base64, width, height };
+  } catch {
+    cleanupTemp(path);
+    return null;
+  }
+}
 
-    // ML Kit iOS loads via NSURL URLWithString — requires a file:// URL.
-    const result = await TextRecognition.recognize(fileUri);
-    const imageWidth = CAPTURE_WIDTH;
-    const imageHeight = CAPTURE_WIDTH / Math.max(0.1, pageAspect || 0.72);
+async function recognizeCapturedOnDevice(captured: CapturedPageImage): Promise<OcrPageData> {
+  if (!TextRecognition) return emptyPage();
+  try {
+    const result = await TextRecognition.recognize(captured.fileUri);
+    const imageWidth = captured.width;
+    const imageHeight = captured.height;
     const blocks: OcrBlock[] = (result?.blocks || [])
       .map((block) => {
         const lines: OcrLine[] = (block.lines || [])
@@ -133,8 +201,6 @@ export async function recognizePage(
     return { text, blocks, quality: estimateQuality(text) };
   } catch {
     return emptyPage();
-  } finally {
-    cleanupTemp(path);
   }
 }
 

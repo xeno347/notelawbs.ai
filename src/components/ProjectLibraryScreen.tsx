@@ -112,7 +112,7 @@ export default function ProjectLibraryScreen({ onSettings }: { onSettings: () =>
             </View>
 
             {projects.map((proj, i) => {
-              const tone = [p.tint, p.ai, p.iris, p.accent][i % 4];
+              const tone = [p.accent, '#6B7280', '#4A5568', p.accentAlt][i % 4];
               const renaming = renamingId === proj.id;
               return (
                 <View key={proj.id} style={{ width: cardW + gap, padding: gap / 2 }}>

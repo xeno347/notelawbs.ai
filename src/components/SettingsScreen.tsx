@@ -21,11 +21,19 @@ import { useAuth } from '../auth/authStore';
 import { useSessionLock } from '../auth/sessionLockStore';
 import { saveKey, clearKey } from '../research/service';
 import { getGroqKey, saveGroqKey, clearGroqKey } from '../services/aiClient';
+import {
+  getCloudOcrKey,
+  saveCloudOcrKey,
+  clearCloudOcrKey,
+} from '../services/cloudOcrService';
 import { getSetting } from '../storage';
 import {
   getSupabaseOverrides,
   saveSupabaseOverrides,
   isSupabaseConfigured,
+  getGoogleClientOverrides,
+  saveGoogleClientOverrides,
+  googleClientIds,
 } from '../services/supabase';
 import {
   PERMISSION_ITEMS,
@@ -81,22 +89,32 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
   const nodes = useStore((s) => s.nodes);
   const autoOcr = useStore((s) => s.autoOcr);
   const setAutoOcr = useStore((s) => s.setAutoOcr);
+  const preferCloudOcr = useStore((s) => s.preferCloudOcr);
+  const setPreferCloudOcr = useStore((s) => s.setPreferCloudOcr);
 
   const [apiKey, setApiKey] = useState('');
   const [groqKey, setGroqKey] = useState('');
+  const [cloudOcrKey, setCloudOcrKey] = useState('');
   const [keyLoaded, setKeyLoaded] = useState(false);
   const [keySaved, setKeySaved] = useState(false);
   const [groqSaved, setGroqSaved] = useState(false);
+  const [cloudOcrSaved, setCloudOcrSaved] = useState(false);
   const [permStatus, setPermStatus] = useState<Partial<Record<PermissionKey, PermissionState>>>({});
   const [sbUrl, setSbUrl] = useState('');
   const [sbKey, setSbKey] = useState('');
   const [sbSaved, setSbSaved] = useState(false);
+  const [googleWeb, setGoogleWeb] = useState('');
+  const [googleIos, setGoogleIos] = useState('');
+  const [googleSaved, setGoogleSaved] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [sbConfigured, setSbConfigured] = useState(isSupabaseConfigured());
 
   useEffect(() => {
     getGroqKey().then((k) => {
       if (k) setGroqKey(k);
+    });
+    getCloudOcrKey().then((k) => {
+      if (k) setCloudOcrKey(k);
     });
     getSetting('anthropic_key').then((k) => {
       if (k) setApiKey(k);
@@ -115,6 +133,10 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
     const ov = getSupabaseOverrides();
     setSbUrl(ov.url);
     setSbKey(ov.anonKey);
+    const gOv = getGoogleClientOverrides();
+    const ids = googleClientIds();
+    setGoogleWeb(gOv.web || ids.web);
+    setGoogleIos(gOv.ios || ids.ios);
   }, []);
 
   const onSaveSupabase = async () => {
@@ -124,11 +146,28 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
     setTimeout(() => setSbSaved(false), 1800);
   };
 
+  const onSaveGoogle = async () => {
+    await saveGoogleClientOverrides(googleWeb, googleIos);
+    setGoogleSaved(true);
+    setTimeout(() => setGoogleSaved(false), 1800);
+  };
+
   const onSaveGroqKey = async () => {
     if (groqKey.trim()) await saveGroqKey(groqKey);
     else await clearGroqKey();
     setGroqSaved(true);
     setTimeout(() => setGroqSaved(false), 1800);
+  };
+
+  const onSaveCloudOcrKey = async () => {
+    if (cloudOcrKey.trim()) {
+      await saveCloudOcrKey(cloudOcrKey);
+      setPreferCloudOcr(true);
+    } else {
+      await clearCloudOcrKey();
+    }
+    setCloudOcrSaved(true);
+    setTimeout(() => setCloudOcrSaved(false), 1800);
   };
 
   const onSaveKey = async () => {
@@ -217,6 +256,15 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
               <Text style={[styles.hint, { color: p.textMuted }]}>
                 System follows your device. Light is the default when no preference is set.
               </Text>
+              <Text style={[styles.rowLabel, { color: p.text, marginTop: 8 }]}>Annotation colour legend</Text>
+              <Text style={[styles.hint, { color: p.textMuted }]}>
+                Key fact · Favourable · Adverse · To verify · Procedure — pick a category when you
+                highlight. Default mark style follows Text / Under / Strike on the toolbar.
+              </Text>
+              <Text style={[styles.hint, { color: p.textMuted }]}>
+                Shortcuts: Text / Box select → Highlight to canvas · Pen draws with Finger on · Fit
+                frames all canvas cards · Index tap jumps to page.
+              </Text>
             </View>
           </Section>
 
@@ -225,14 +273,31 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
               <View style={{ flex: 1 }}>
                 <Text style={[styles.rowLabel, { color: p.text }]}>Auto text recognition</Text>
                 <Text style={[styles.rowSub, { color: p.textMuted }]}>
-                  Run OCR when you pause on a page. Off by default — use Scan in the reader when you
-                  need searchable text (saves battery and avoids scan flicker).
+                  When on, newly opened documents are scanned automatically (or import an existing
+                  text layer if the PDF is already searchable). Turn off here or with Disable auto
+                  OCR in the reader — nothing is pushed to the canvas.
                 </Text>
               </View>
               <Switch
                 value={autoOcr}
                 onValueChange={setAutoOcr}
                 trackColor={{ true: p.tint, false: p.separator }}
+                thumbColor="#fff"
+              />
+            </View>
+            <RowDivider />
+            <View style={styles.row}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.rowLabel, { color: p.text }]}>Cloud OCR for full documents</Text>
+                <Text style={[styles.rowSub, { color: p.textMuted }]}>
+                  When enabled, newly opened documents are OCR’d via OCR.space (up to three pages at
+                  once). Falls back to on-device recognition if a cloud request fails or no key is set.
+                </Text>
+              </View>
+              <Switch
+                value={preferCloudOcr}
+                onValueChange={setPreferCloudOcr}
+                trackColor={{ true: p.ai, false: p.separator }}
                 thumbColor="#fff"
               />
             </View>
@@ -310,6 +375,40 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
 
           {showAdvanced && (
             <>
+              <Section title="Cloud OCR">
+                <View style={{ padding: 16, gap: 10 }}>
+                  <Field
+                    label="OCR.space API key"
+                    value={cloudOcrKey}
+                    onChangeText={setCloudOcrKey}
+                    placeholder="K8…"
+                    secureTextEntry
+                    autoCapitalize="none"
+                  />
+                  <Text style={[styles.hint, { color: p.textMuted }]}>
+                    Get a key at ocr.space/ocrapi. Page images leave this device while scanning;
+                    extracted text and word positions are saved back into your workspace.
+                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+                    <AppButton
+                      label={cloudOcrSaved ? 'Saved' : 'Save cloud OCR key'}
+                      variant="secondary"
+                      onPress={onSaveCloudOcrKey}
+                    />
+                    {cloudOcrKey ? (
+                      <AppButton
+                        label="Clear"
+                        variant="ghost"
+                        onPress={async () => {
+                          setCloudOcrKey('');
+                          await clearCloudOcrKey();
+                        }}
+                      />
+                    ) : null}
+                  </View>
+                </View>
+              </Section>
+
               <Section title="AI keys">
                 <View style={{ padding: 16, gap: 10 }}>
                   <Field
@@ -377,6 +476,38 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
                       />
                     ) : null}
                   </View>
+                  <Text style={{ color: p.textMuted, fontSize: 12, lineHeight: 17 }}>
+                    Required for Google / Apple sign-in and live sharing. After saving, return to the
+                    sign-in screen (sign out if needed).
+                  </Text>
+                </View>
+              </Section>
+
+              <Section title="Google sign-in">
+                <View style={{ padding: 16, gap: 10 }}>
+                  <Field
+                    label="Web Client ID"
+                    value={googleWeb}
+                    onChangeText={setGoogleWeb}
+                    placeholder="….apps.googleusercontent.com"
+                    autoCapitalize="none"
+                  />
+                  <Field
+                    label="iOS Client ID"
+                    value={googleIos}
+                    onChangeText={setGoogleIos}
+                    placeholder="….apps.googleusercontent.com"
+                    autoCapitalize="none"
+                  />
+                  <AppButton
+                    label={googleSaved ? 'Saved' : 'Save Google IDs'}
+                    variant="secondary"
+                    onPress={onSaveGoogle}
+                  />
+                  <Text style={{ color: p.textMuted, fontSize: 12, lineHeight: 17 }}>
+                    Use the Web client ID from Google Cloud (same one enabled in Supabase → Auth →
+                    Google). iOS client must match the URL scheme in the app.
+                  </Text>
                 </View>
               </Section>
             </>

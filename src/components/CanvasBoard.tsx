@@ -6,8 +6,6 @@ import {
   StyleSheet,
   PanResponder,
   LayoutRectangle,
-  Alert,
-  Platform,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -16,7 +14,7 @@ import Animated, {
 import { Canvas, Path, Circle, Skia, Points, vec } from '@shopify/react-native-skia';
 import Svg, { Polyline } from 'react-native-svg';
 import { Undo2, Redo2, LayoutGrid } from 'lucide-react-native';
-import { useStore, type Stroke, type Edge } from '../store';
+import { useStore, type Stroke, type Edge, EDGE_RELATIONS, type EdgeRelation } from '../store';
 import { useCollab, useViewerLocked } from '../collab/collabStore';
 import { useAnnotation, INK_SWATCHES } from '../annotationStore';
 import {
@@ -94,14 +92,19 @@ export default function CanvasBoard() {
   // grid, thread overlay). The live pan/zoom runs on the UI thread through the
   // shared values below so gestures never wait on a React re-render — that is
   // what previously made panning tear.
-  const [tf, setTf] = useState({ s: 1, tx: 20, ty: 20 });
-  const [gridTf, setGridTf] = useState(tf);
+  const storedTf = useStore((s) => s.canvasTf);
+  const [tf, setTf] = useState(storedTf);
+  const [gridTf, setGridTf] = useState(storedTf);
   const [liveStroke, setLiveStroke] = useState<Stroke | null>(null);
   const [livePointsSvg, setLivePointsSvg] = useState('');
+  const [pendingRelation, setPendingRelation] = useState<{
+    source: string;
+    target: string;
+  } | null>(null);
 
-  const sScale = useSharedValue(1);
-  const sX = useSharedValue(20);
-  const sY = useSharedValue(20);
+  const sScale = useSharedValue(storedTf.s);
+  const sX = useSharedValue(storedTf.tx);
+  const sY = useSharedValue(storedTf.ty);
 
   const tfRef = useRef(tf);
   const commitTs = useRef(0);
@@ -168,8 +171,34 @@ export default function CanvasBoard() {
   }, []);
 
   useEffect(() => {
-    if (fitSerial > 0) applyTf({ s: 1, tx: 20, ty: 20 }, true);
-  }, [fitSerial, applyTf]);
+    if (fitSerial <= 0) return;
+    // PRD 4.3 “Frame all” — zoom to the bounding box of every card.
+    const state = useStore.getState();
+    const list = state.nodes;
+    if (!list.length || !container) {
+      applyTf({ s: 1, tx: 20, ty: 20 }, true);
+      return;
+    }
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const n of list) {
+      const w = n.w || nodeWidth(n.type);
+      const h = n.h || state.nodeSizes[n.id]?.h || 140;
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x + w);
+      maxY = Math.max(maxY, n.y + h);
+    }
+    const pad = 48;
+    const contentW = Math.max(80, maxX - minX + pad * 2);
+    const contentH = Math.max(80, maxY - minY + pad * 2);
+    const scale = Math.min(2.5, Math.max(0.2, Math.min(container.width / contentW, container.height / contentH)));
+    const tx = container.width / 2 - (minX + (maxX - minX) / 2) * scale;
+    const ty = container.height / 2 - (minY + (maxY - minY) / 2) * scale;
+    applyTf({ s: scale, tx, ty }, true);
+  }, [fitSerial, applyTf, container]);
 
   useEffect(() => {
     setCanvasTf(tf);
@@ -386,28 +415,17 @@ export default function CanvasBoard() {
   const handleConnectTo = useCallback(
     (id: string) => {
       if (!connectSource) return;
-      addEdge(connectSource, id);
-      const edge = useStore.getState().edges.find((e) => e.source === connectSource && e.target === id);
+      setPendingRelation({ source: connectSource, target: id });
       setConnectSource(null);
-      if (edge && Platform.OS === 'ios' && typeof Alert.prompt === 'function') {
-        Alert.prompt(
-          'Connection label',
-          'Optional label for this link (e.g. supports, contradicts)',
-          [
-            { text: 'Skip', style: 'cancel' },
-            {
-              text: 'Save',
-              onPress: (label?: string) => {
-                if (label?.trim()) updateEdge(edge.id, { label: label.trim() });
-              },
-            },
-          ],
-          'plain-text',
-        );
-      }
     },
-    [connectSource, addEdge, updateEdge],
+    [connectSource],
   );
+
+  const confirmRelation = (relation: EdgeRelation) => {
+    if (!pendingRelation) return;
+    addEdge(pendingRelation.source, pendingRelation.target, undefined, relation);
+    setPendingRelation(null);
+  };
 
   // Cull off-screen cards from mounting — edges/threads still use the full
   // `nodes` list (cheap Skia draws), only the heavy per-card Views are culled.
@@ -426,6 +444,20 @@ export default function CanvasBoard() {
     });
   }, [nodes, container, tf]);
 
+  const inkViewBox = useMemo(() => {
+    if (!container) return null;
+    const margin = 500;
+    const scl = Math.max(0.05, tf.s);
+    const left = -tf.tx / scl - margin;
+    const top = -tf.ty / scl - margin;
+    return {
+      left,
+      top,
+      right: left + container.width / scl + margin * 2,
+      bottom: top + container.height / scl + margin * 2,
+    };
+  }, [container, tf]);
+
   const s = styles(p);
 
   return (
@@ -440,13 +472,8 @@ export default function CanvasBoard() {
       <View ref={boardRef} style={s.board} onLayout={publishOrigin} {...boardPan.panHandlers}>
         <Animated.View style={[{ position: 'absolute', left: 0, top: 0 }, translateStyle]}>
           <Animated.View style={[{ width: BOARD, height: BOARD }, scaleStyle]}>
-            {/* Ink under cards so Pencil draws on empty canvas; cards go transparent while inking */}
-            {drawing && (
-              <View style={[StyleSheet.absoluteFill, { zIndex: 1 }]} {...drawPan.panHandlers} />
-            )}
-
-            <EdgesLayer edges={edges} nodes={nodes} color={p.danger} labelColor={p.textMid} />
-            <InkLayer ink={ink} inkColors={inkColors} accent={p.accent} />
+            <EdgesLayer edges={edges} nodes={nodes} labelColor={p.textMid} />
+            <InkLayer ink={ink} inkColors={inkColors} accent={p.accent} viewBox={inkViewBox} />
 
             {liveStroke && livePointsSvg.length > 0 && (
               <Svg
@@ -467,7 +494,7 @@ export default function CanvasBoard() {
 
             <View
               style={[StyleSheet.absoluteFill, { zIndex: 8 }]}
-              pointerEvents={viewerLocked ? 'none' : 'box-none'}>
+              pointerEvents={viewerLocked || drawing ? 'none' : 'box-none'}>
               {visibleNodes.map((n) => (
                 <View
                   key={n.id}
@@ -497,6 +524,11 @@ export default function CanvasBoard() {
                 </View>
               ))}
             </View>
+
+            {/* Draw / link capture sits above cards so strokes are never stolen. */}
+            {drawing && (
+              <View style={[StyleSheet.absoluteFill, { zIndex: 40 }]} {...drawPan.panHandlers} />
+            )}
 
             <CollabCursors scale={tf.s} />
           </Animated.View>
@@ -534,8 +566,8 @@ export default function CanvasBoard() {
           </View>
           <Text style={s.emptyTitle}>Canvas</Text>
           <Text style={s.emptyText}>
-            Highlight passages in the reader — they land here as freeform cards. Pinch to zoom the
-            desk, drag cards with your finger, and draw with Apple Pencil.
+            Use Text or Box in the reader, then Highlight to drop excerpt cards here. Tap Note for a
+            sticky note, Pen to draw (Finger is on by default), and Link to wire ink to a PDF spot.
           </Text>
         </View>
       )}
@@ -552,6 +584,26 @@ export default function CanvasBoard() {
           </TouchableOpacity>
         </View>
       )}
+
+      {pendingRelation && (
+        <View style={s.relationSheet}>
+          <Text style={s.relationTitle}>Edge type</Text>
+          <Text style={s.relationHint}>PRD mind-map relation — colour encodes the argument link.</Text>
+          <View style={s.relationRow}>
+            {EDGE_RELATIONS.map((r) => (
+              <TouchableOpacity
+                key={r.key}
+                style={[s.relationChip, { borderColor: r.color, backgroundColor: `${r.color}22` }]}
+                onPress={() => confirmRelation(r.key)}>
+                <Text style={[s.relationChipText, { color: r.color }]}>{r.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <TouchableOpacity onPress={() => setPendingRelation(null)}>
+            <Text style={s.linkCancel}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }
@@ -559,12 +611,10 @@ export default function CanvasBoard() {
 const EdgesLayer = React.memo(function EdgesLayer({
   edges,
   nodes,
-  color,
   labelColor,
 }: {
   edges: Edge[];
   nodes: Array<{ id: string; type?: string; x: number; y: number }>;
-  color: string;
   labelColor: string;
 }) {
   const center = (id: string) => {
@@ -573,6 +623,8 @@ const EdgesLayer = React.memo(function EdgesLayer({
     const w = nodeWidth(n.type);
     return { x: n.x + w / 2, y: n.y + 50 };
   };
+  const colorFor = (e: Edge) =>
+    EDGE_RELATIONS.find((r) => r.key === (e.relation || 'related'))?.color || '#C0392B';
   return (
     <View style={{ width: BOARD, height: BOARD, position: 'absolute' }} pointerEvents="none">
       <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
@@ -582,33 +634,38 @@ const EdgesLayer = React.memo(function EdgesLayer({
           if (!a || !b) return null;
           const path = Skia.Path.MakeFromSVGString(`M ${a.x} ${a.y} L ${b.x} ${b.y}`);
           if (!path) return null;
-          return <Path key={e.id} path={path} color={color} style="stroke" strokeWidth={2} />;
+          const stroke = colorFor(e);
+          return <Path key={e.id} path={path} color={stroke} style="stroke" strokeWidth={2.4} />;
         })}
       </Canvas>
       {edges.map((e) => {
-        if (!e.label) return null;
         const a = center(e.source);
         const b = center(e.target);
         if (!a || !b) return null;
         const mx = (a.x + b.x) / 2;
         const my = (a.y + b.y) / 2;
+        const stroke = colorFor(e);
+        const text = e.label || EDGE_RELATIONS.find((r) => r.key === e.relation)?.label || '';
+        if (!text) return null;
         return (
           <Text
             key={`lbl-${e.id}`}
             style={{
               position: 'absolute',
-              left: mx - 50,
+              left: mx - 54,
               top: my - 14,
-              width: 100,
+              width: 108,
               textAlign: 'center',
               fontSize: 11,
               fontWeight: '700',
-              color: labelColor,
-              backgroundColor: 'rgba(255,255,255,0.75)',
+              color: stroke || labelColor,
+              backgroundColor: 'rgba(255,255,255,0.82)',
               overflow: 'hidden',
+              borderRadius: 4,
+              paddingVertical: 2,
             }}
             numberOfLines={1}>
-            {e.label}
+            {text}
           </Text>
         );
       })}
@@ -620,14 +677,42 @@ const InkLayer = React.memo(function InkLayer({
   ink,
   inkColors,
   accent,
+  viewBox,
 }: {
   ink: { strokes: Stroke[]; links: Array<{ id: string; canvasPoint: { x: number; y: number } }> };
   inkColors: string[];
   accent: string;
+  viewBox: { left: number; top: number; right: number; bottom: number } | null;
 }) {
+  const strokes = ink.strokes.filter((st) => {
+    if (st.pdfPage != null) return false;
+    if (!viewBox || !st.points.length) return true;
+    // Cheap AABB cull — skip strokes fully outside the padded viewport.
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const pt of st.points) {
+      if (pt.x < minX) minX = pt.x;
+      if (pt.y < minY) minY = pt.y;
+      if (pt.x > maxX) maxX = pt.x;
+      if (pt.y > maxY) maxY = pt.y;
+    }
+    return maxX >= viewBox.left && minX <= viewBox.right && maxY >= viewBox.top && minY <= viewBox.bottom;
+  });
+  const links = viewBox
+    ? ink.links.filter(
+        (l) =>
+          l.canvasPoint.x >= viewBox.left &&
+          l.canvasPoint.x <= viewBox.right &&
+          l.canvasPoint.y >= viewBox.top &&
+          l.canvasPoint.y <= viewBox.bottom,
+      )
+    : ink.links;
+
   return (
     <Canvas style={{ width: BOARD, height: BOARD, position: 'absolute' }} pointerEvents="none">
-      {ink.strokes.filter((st) => st.pdfPage == null).map((st) => (
+      {strokes.map((st) => (
         <Path
           key={st.id}
           path={pointsToSvg(st.points)}
@@ -638,7 +723,7 @@ const InkLayer = React.memo(function InkLayer({
           strokeJoin="round"
         />
       ))}
-      {ink.links.map((l) => (
+      {links.map((l) => (
         <Circle key={l.id} cx={l.canvasPoint.x} cy={l.canvasPoint.y} r={6} color={accent} />
       ))}
     </Canvas>
@@ -762,5 +847,28 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       ...ELEVATION.float,
     },
     linkBannerText: { color: p.text, fontSize: 14, maxWidth: 260 },
-    linkCancel: { color: p.tint, fontSize: 15, fontWeight: '600' },
+    linkCancel: { color: p.tint, fontSize: 15, fontWeight: '600', textAlign: 'center', marginTop: 8 },
+    relationSheet: {
+      position: 'absolute',
+      left: 16,
+      right: 16,
+      bottom: 88,
+      padding: 16,
+      borderRadius: RADIUS.lg,
+      backgroundColor: p.grouped,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: p.separator,
+      ...ELEVATION.float,
+      gap: 8,
+    },
+    relationTitle: { fontSize: 16, fontWeight: '800', color: p.text },
+    relationHint: { fontSize: 12, color: p.textMuted, marginBottom: 4 },
+    relationRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    relationChip: {
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: RADIUS.pill,
+      borderWidth: 1.5,
+    },
+    relationChipText: { fontSize: 12, fontWeight: '700' },
   });

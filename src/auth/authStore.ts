@@ -42,6 +42,20 @@ type AuthStore = {
   clearError: () => void;
 };
 
+async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 let cloudListenerBound = false;
 
 export const useAuth = create<AuthStore>((set, get) => ({
@@ -70,7 +84,7 @@ export const useAuth = create<AuthStore>((set, get) => ({
           }
         });
       }
-      const cloudUser = await getCloudUser();
+      const cloudUser = await withTimeout(getCloudUser(), 3000, null);
       if (cloudUser) {
         setWorkspaceScope(cloudUser.id);
         set({ status: 'authenticated', user: cloudUser, cloud: true, permissionsHandled: true });
@@ -95,31 +109,84 @@ export const useAuth = create<AuthStore>((set, get) => ({
 
   register: async (email, password, displayName) => {
     set({ submitting: true, error: null });
-    if (isSupabaseConfigured()) {
-      const res = await cloudSignUpWithEmail(email, password, displayName);
+    try {
+      if (isSupabaseConfigured()) {
+        const res = await withTimeout(
+          cloudSignUpWithEmail(email, password, displayName),
+          20000,
+          { ok: false as const, error: 'Sign-up timed out. Check your network and Supabase URL.' },
+        );
+        if (!res.ok) {
+          set({ submitting: false, error: res.error });
+          return false;
+        }
+        setWorkspaceScope(res.user.id);
+        set({ submitting: false, status: 'authenticated', user: res.user, cloud: true, permissionsHandled: false });
+        return true;
+      }
+      const res = await signUp(email, password, displayName);
       if (!res.ok) {
         set({ submitting: false, error: res.error });
         return false;
       }
       setWorkspaceScope(res.user.id);
-      set({ submitting: false, status: 'authenticated', user: res.user, cloud: true, permissionsHandled: false });
+      await saveSession({ userId: res.user.id, email: res.user.email, issuedAt: Date.now() });
+      set({ submitting: false, status: 'authenticated', user: res.user, cloud: false, permissionsHandled: false });
       return true;
-    }
-    const res = await signUp(email, password, displayName);
-    if (!res.ok) {
-      set({ submitting: false, error: res.error });
+    } catch (e: any) {
+      set({ submitting: false, error: e?.message || 'Sign-up failed.' });
       return false;
     }
-    setWorkspaceScope(res.user.id);
-    await saveSession({ userId: res.user.id, email: res.user.email, issuedAt: Date.now() });
-    set({ submitting: false, status: 'authenticated', user: res.user, cloud: false, permissionsHandled: false });
-    return true;
   },
 
   login: async (email, password) => {
     set({ submitting: true, error: null });
-    if (isSupabaseConfigured()) {
-      const res = await cloudSignInWithEmail(email, password);
+    try {
+      if (isSupabaseConfigured()) {
+        const res = await withTimeout(
+          cloudSignInWithEmail(email, password),
+          20000,
+          { ok: false as const, error: 'Sign-in timed out. Check your network and Supabase URL.' },
+        );
+        if (!res.ok) {
+          set({ submitting: false, error: res.error });
+          return false;
+        }
+        setWorkspaceScope(res.user.id);
+        set({ submitting: false, status: 'authenticated', user: res.user, cloud: true, permissionsHandled: false });
+        return true;
+      }
+      const res = await signIn(email, password);
+      if (!res.ok) {
+        set({ submitting: false, error: res.error });
+        return false;
+      }
+      setWorkspaceScope(res.user.id);
+      await saveSession({ userId: res.user.id, email: res.user.email, issuedAt: Date.now() });
+      set({ submitting: false, status: 'authenticated', user: res.user, cloud: false, permissionsHandled: false });
+      return true;
+    } catch (e: any) {
+      set({ submitting: false, error: e?.message || 'Sign-in failed.' });
+      return false;
+    }
+  },
+
+  loginWithGoogle: async () => {
+    set({ submitting: true, error: null });
+    try {
+      await loadSupabaseOverrides();
+      if (!isSupabaseConfigured()) {
+        set({
+          submitting: false,
+          error: 'Add Supabase URL + anon key in Settings → Advanced → Backend, then try Google again.',
+        });
+        return false;
+      }
+      const res = await withTimeout(
+        cloudSignInWithGoogle(),
+        60000,
+        { ok: false as const, error: 'Google sign-in timed out.' },
+      );
       if (!res.ok) {
         set({ submitting: false, error: res.error });
         return false;
@@ -127,48 +194,39 @@ export const useAuth = create<AuthStore>((set, get) => ({
       setWorkspaceScope(res.user.id);
       set({ submitting: false, status: 'authenticated', user: res.user, cloud: true, permissionsHandled: false });
       return true;
-    }
-    const res = await signIn(email, password);
-    if (!res.ok) {
-      set({ submitting: false, error: res.error });
+    } catch (e: any) {
+      set({ submitting: false, error: e?.message || 'Google sign-in failed.' });
       return false;
     }
-    setWorkspaceScope(res.user.id);
-    await saveSession({ userId: res.user.id, email: res.user.email, issuedAt: Date.now() });
-    set({ submitting: false, status: 'authenticated', user: res.user, cloud: false, permissionsHandled: false });
-    return true;
-  },
-
-  loginWithGoogle: async () => {
-    set({ submitting: true, error: null });
-    if (!isSupabaseConfigured()) {
-      set({ submitting: false, error: 'Connect Supabase in Settings to use Google sign-in.' });
-      return false;
-    }
-    const res = await cloudSignInWithGoogle();
-    if (!res.ok) {
-      set({ submitting: false, error: res.error });
-      return false;
-    }
-    setWorkspaceScope(res.user.id);
-    set({ submitting: false, status: 'authenticated', user: res.user, cloud: true, permissionsHandled: false });
-    return true;
   },
 
   loginWithApple: async () => {
     set({ submitting: true, error: null });
-    if (!isSupabaseConfigured()) {
-      set({ submitting: false, error: 'Connect Supabase in Settings to use Apple sign-in.' });
+    try {
+      await loadSupabaseOverrides();
+      if (!isSupabaseConfigured()) {
+        set({
+          submitting: false,
+          error: 'Add Supabase URL + anon key in Settings → Advanced → Backend, then try Apple again.',
+        });
+        return false;
+      }
+      const res = await withTimeout(
+        cloudSignInWithApple(),
+        60000,
+        { ok: false as const, error: 'Apple sign-in timed out.' },
+      );
+      if (!res.ok) {
+        set({ submitting: false, error: res.error });
+        return false;
+      }
+      setWorkspaceScope(res.user.id);
+      set({ submitting: false, status: 'authenticated', user: res.user, cloud: true, permissionsHandled: false });
+      return true;
+    } catch (e: any) {
+      set({ submitting: false, error: e?.message || 'Apple sign-in failed.' });
       return false;
     }
-    const res = await cloudSignInWithApple();
-    if (!res.ok) {
-      set({ submitting: false, error: res.error });
-      return false;
-    }
-    setWorkspaceScope(res.user.id);
-    set({ submitting: false, status: 'authenticated', user: res.user, cloud: true, permissionsHandled: false });
-    return true;
   },
 
   logout: async () => {

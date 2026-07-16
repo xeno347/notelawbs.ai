@@ -3,12 +3,14 @@ import { View, Text, TouchableOpacity, StyleSheet, PanResponder } from 'react-na
 import { X, ChevronLeft } from 'lucide-react-native';
 import { useStore, type FlowNode, type ExcerptData } from '../store';
 import { catStyle, getPalette, useTheme, SERIF, RADIUS, ELEVATION } from '../theme';
+import { useFreeformDrag } from '../hooks/useFreeformDrag';
 
 export const CARD_WIDTH = 248;
 
 /**
  * Freeform OCR excerpt card — touch claims the gesture so the canvas
  * cannot steal the drag; z-order uses style zIndex (no list reorder mid-drag).
+ * Drag uses local offsets so sibling cards stay idle during the gesture.
  */
 function ExcerptCard({
   node,
@@ -22,7 +24,6 @@ function ExcerptCard({
   onConnectTo: (id: string) => void;
 }) {
   const p = useTheme();
-  const moveNode = useStore((s) => s.moveNode);
   const resizeNode = useStore((s) => s.resizeNode);
   const bringNodeToFront = useStore((s) => s.bringNodeToFront);
   const removeNode = useStore((s) => s.removeNode);
@@ -31,10 +32,16 @@ function ExcerptCard({
   const setNodeSize = useStore((s) => s.setNodeSize);
   const setNodeAnchor = useStore((s) => s.setNodeAnchor);
   const commitHistory = useStore((s) => s.commitHistory);
-  const assignNodeGroupByPosition = useStore((s) => s.assignNodeGroupByPosition);
   const data = node.data as ExcerptData;
   const highlight = useStore((s) => (data.highlightId ? s.highlights.find((h) => h.id === data.highlightId) : undefined));
+  const library = useStore((s) => s.library);
   const isApprox = highlight?.anchorStatus === 'approximate';
+  const sourceMissing =
+    !data.highlightId ||
+    !highlight ||
+    (!!data.docId && !library.some((d) => d.id === data.docId));
+  const trustLabel = sourceMissing ? 'unavailable' : isApprox ? 'approximate' : 'exact';
+  const trustColor = sourceMissing ? '#C0392B' : isApprox ? '#E67E22' : '#27AE60';
   const anchorRef = useRef<View>(null);
   const cs = catStyle(data.category);
   const startRef = useRef({ x: 0, y: 0, w: CARD_WIDTH, h: 140 });
@@ -51,49 +58,10 @@ function ExcerptCard({
     });
   }, [node.id, setNodeAnchor]);
 
-  // Capture start position from the store on grant so mid-drag store updates
-  // (moveNode) never rebuild this responder with a new origin.
-  const pan = useMemo(
-    () =>
-      PanResponder.create({
-        // Claim immediately so the parent board pan cannot win the touch.
-        onStartShouldSetPanResponder: () => true,
-        onStartShouldSetPanResponderCapture: () => false,
-        onMoveShouldSetPanResponder: (_e, g) =>
-          g.numberActiveTouches === 1 && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
-        onMoveShouldSetPanResponderCapture: (_e, g) =>
-          g.numberActiveTouches === 1 && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
-        onPanResponderTerminationRequest: () => false,
-        onShouldBlockNativeResponder: () => true,
-        onPanResponderGrant: () => {
-          const n = useStore.getState().nodes.find((x) => x.id === node.id);
-          startRef.current = {
-            x: n?.x ?? node.x,
-            y: n?.y ?? node.y,
-            w: n?.w || CARD_WIDTH,
-            h: n?.h || useStore.getState().nodeSizes[node.id]?.h || 140,
-          };
-          commitHistory();
-          bringNodeToFront(node.id);
-          setHoverNodeId(node.id);
-        },
-        onPanResponderMove: (_e, g) => {
-          const s = liveScale();
-          moveNode(node.id, startRef.current.x + g.dx / s, startRef.current.y + g.dy / s);
-        },
-        onPanResponderRelease: () => {
-          setHoverNodeId(null);
-          publishAnchor();
-          assignNodeGroupByPosition(node.id);
-        },
-        onPanResponderTerminate: () => {
-          setHoverNodeId(null);
-        },
-      }),
-    // Intentionally omit node.x/y — grant reads live position from the store.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [node.id, moveNode, bringNodeToFront, setHoverNodeId, publishAnchor, commitHistory, assignNodeGroupByPosition],
-  );
+  const drag = useFreeformDrag({
+    nodeId: node.id,
+    onRelease: publishAnchor,
+  });
 
   const resizePan = useMemo(
     () =>
@@ -127,7 +95,7 @@ function ExcerptCard({
   );
 
   const s = styles(p);
-  const cite = `—${(data.docName || 'Document').replace(/\.pdf$/i, '')}, p.${data.page}${isApprox ? ' ≈' : ''}`;
+  const cite = `—${(data.docName || 'Document').replace(/\.pdf$/i, '')}, p.${data.page}`;
   const heightStyle = node.h ? { height: node.h } : null;
 
   return (
@@ -135,10 +103,11 @@ function ExcerptCard({
       style={[
         s.card,
         {
-          left: node.x,
-          top: node.y,
+          left: drag.x,
+          top: drag.y,
           width,
           zIndex: node.z || 1,
+          opacity: drag.dragging ? 0.92 : 1,
         },
         heightStyle,
         isSource && s.cardSource,
@@ -149,7 +118,7 @@ function ExcerptCard({
         setNodeSize(node.id, { w: lw, h: lh });
         publishAnchor();
       }}
-      {...pan.panHandlers}>
+      {...drag.panHandlers}>
       <View style={[s.tint, { backgroundColor: cs.soft }]} pointerEvents="none" />
       <View style={s.inner} pointerEvents="box-none">
         <View style={s.topRow} pointerEvents="box-none">
@@ -167,6 +136,11 @@ function ExcerptCard({
         <Text style={[s.quote, node.h ? { flex: 1 } : null]} numberOfLines={node.h ? undefined : 8}>
           {data.text}
         </Text>
+        {!!data.originalText && data.originalText !== data.text && (
+          <Text style={s.original} numberOfLines={3}>
+            {data.originalText}
+          </Text>
+        )}
 
         {!!data.note && (
           <Text style={s.note} numberOfLines={3}>
@@ -179,7 +153,7 @@ function ExcerptCard({
           onPress={() =>
             connecting && !isSource
               ? onConnectTo(node.id)
-              : data.highlightId
+              : data.highlightId && !sourceMissing
                 ? jumpToHighlight(data.highlightId)
                 : onConnectStart(node.id)
           }
@@ -190,9 +164,12 @@ function ExcerptCard({
             onLayout={publishAnchor}>
             <ChevronLeft size={12} color="#fff" strokeWidth={2.4} />
           </View>
-          <Text style={s.sourceText} numberOfLines={1}>
-            {cite}
-          </Text>
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text style={s.sourceText} numberOfLines={1}>
+              {cite}
+            </Text>
+            <Text style={[s.trustBadge, { color: trustColor }]}>{trustLabel}</Text>
+          </View>
         </TouchableOpacity>
       </View>
 
@@ -250,6 +227,13 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       color: p.text,
       marginBottom: 8,
     },
+    original: {
+      fontSize: 11,
+      lineHeight: 15,
+      color: p.textMuted,
+      marginBottom: 8,
+      fontStyle: 'italic',
+    },
     note: {
       fontSize: 11.5,
       fontStyle: 'italic',
@@ -268,6 +252,12 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       borderRadius: 10,
       alignItems: 'center',
       justifyContent: 'center',
+    },
+    trustBadge: {
+      fontSize: 10,
+      fontWeight: '800',
+      letterSpacing: 0.3,
+      textTransform: 'uppercase',
     },
     sourceText: {
       flex: 1,

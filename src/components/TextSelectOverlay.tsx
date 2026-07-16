@@ -35,30 +35,34 @@ type Props = {
 };
 
 /**
- * Native-style text selection over OCR: long-press a word, drag to extend,
- * blue per-line highlights + drag handles — not a rectangle marquee.
+ * Text selection over the PDF page:
+ * - With OCR/text-layer words: long-press a word, drag to extend (native style).
+ * - Without words yet: drag a marquee rectangle so highlighting still works
+ *   before OCR finishes (or when Auto OCR is off).
  */
 export default function TextSelectOverlay({
   enabled,
   frame,
   pageData,
-  ensuringOcr,
+  ensuringOcr: _ensuringOcr,
   onEnsureOcr,
   onConfirm,
   onBusyChange,
   tint,
   tintSoft,
-  textColor,
   mutedColor,
   surface,
 }: Props) {
   const [range, setRange] = useState<{ start: number; end: number } | null>(null);
   const [dragging, setDragging] = useState<'start' | 'end' | 'extend' | null>(null);
+  const [marquee, setMarquee] = useState<Rect | null>(null);
   const wordsRef = useRef<WordToken[]>([]);
   const anchorRef = useRef(-1);
   const longTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pressOrigin = useRef<{ x: number; y: number } | null>(null);
   const started = useRef(false);
+  const marqueeMode = useRef(false);
+  const marqueeRef = useRef<Rect | null>(null);
   const rangeRef = useRef(range);
   rangeRef.current = range;
 
@@ -68,12 +72,16 @@ export default function TextSelectOverlay({
   useEffect(() => {
     setRange(null);
     setDragging(null);
+    setMarquee(null);
+    marqueeRef.current = null;
   }, [pageData]);
 
   useEffect(() => {
     if (!enabled) {
       setRange(null);
       setDragging(null);
+      setMarquee(null);
+      marqueeRef.current = null;
     }
   }, [enabled]);
 
@@ -99,10 +107,26 @@ export default function TextSelectOverlay({
       if (!data?.blocks?.length) {
         data = await onEnsureOcr();
       }
-      const list = data ? flattenWords(data) : wordsRef.current;
+      const list = data ? flattenWords(data) : [];
       wordsRef.current = list;
+      if (!list.length) {
+        // No OCR words — fall back to marquee from the press origin.
+        marqueeMode.current = true;
+        started.current = true;
+        const origin = pressOrigin.current || { x: px, y: py };
+        const box = {
+          x: Math.min(origin.x, px),
+          y: Math.min(origin.y, py),
+          w: Math.max(8, Math.abs(px - origin.x)),
+          h: Math.max(8, Math.abs(py - origin.y)),
+        };
+        marqueeRef.current = box;
+        setMarquee(box);
+        return;
+      }
       const idx = nearestWordIndex(list, px / frame.w, py / frame.h);
       if (idx < 0) return;
+      marqueeMode.current = false;
       anchorRef.current = idx;
       started.current = true;
       setRange({ start: idx, end: idx });
@@ -113,6 +137,19 @@ export default function TextSelectOverlay({
   };
 
   const extendTo = (px: number, py: number) => {
+    if (marqueeMode.current) {
+      const origin = pressOrigin.current;
+      if (!origin) return;
+      const box = {
+        x: Math.min(origin.x, px),
+        y: Math.min(origin.y, py),
+        w: Math.abs(px - origin.x),
+        h: Math.abs(py - origin.y),
+      };
+      marqueeRef.current = box;
+      setMarquee(box);
+      return;
+    }
     const list = wordsRef.current;
     if (!list.length || anchorRef.current < 0) return;
     const idx = nearestWordIndex(list, px / frame.w, py / frame.h);
@@ -120,10 +157,33 @@ export default function TextSelectOverlay({
     setRange({ start: Math.min(anchorRef.current, idx), end: Math.max(anchorRef.current, idx) });
   };
 
+  const confirmMarquee = () => {
+    const box = marqueeRef.current;
+    if (!box || box.w < 8 || box.h < 8 || !frame.w || !frame.h) return;
+    const rect: Rect = {
+      x: box.x / frame.w,
+      y: box.y / frame.h,
+      w: box.w / frame.w,
+      h: box.h / frame.h,
+    };
+    onConfirm({
+      start: 0,
+      end: 0,
+      text: '',
+      rect,
+      rects: [rect],
+    });
+    setMarquee(null);
+    marqueeRef.current = null;
+    marqueeMode.current = false;
+  };
+
   const selectPan = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => enabled && !ensuringOcr,
+        // Do not gate on ensuringOcr — flipping that flag recreates this
+        // responder mid-gesture and drops the selection.
+        onStartShouldSetPanResponder: () => enabled,
         onMoveShouldSetPanResponder: () => enabled && started.current,
         onPanResponderTerminationRequest: () => !started.current,
         onPanResponderGrant: (evt) => {
@@ -131,17 +191,31 @@ export default function TextSelectOverlay({
           const { locationX, locationY } = evt.nativeEvent;
           pressOrigin.current = { x: locationX, y: locationY };
           started.current = false;
+          marqueeMode.current = false;
+          setMarquee(null);
+          marqueeRef.current = null;
           clearLong();
+          // If words already exist, long-press to select. Otherwise start a
+          // quick marquee after a short hold (or immediately on drag).
+          const hasWords = wordsRef.current.length > 0;
           longTimer.current = setTimeout(() => {
             beginAt(locationX, locationY);
-          }, 320);
+          }, hasWords ? 320 : 180);
         },
         onPanResponderMove: (evt) => {
           const { locationX, locationY } = evt.nativeEvent;
           const origin = pressOrigin.current;
           if (!started.current && origin) {
             const dist = Math.hypot(locationX - origin.x, locationY - origin.y);
-            if (dist > 14) clearLong(); // cancelled — user likely scrolling/panning
+            if (dist > 14) {
+              clearLong();
+              // Drag without waiting for long-press → marquee when no words yet.
+              if (!wordsRef.current.length) {
+                marqueeMode.current = true;
+                started.current = true;
+                extendTo(locationX, locationY);
+              }
+            }
             return;
           }
           if (started.current) extendTo(locationX, locationY);
@@ -149,20 +223,33 @@ export default function TextSelectOverlay({
         onPanResponderRelease: () => {
           clearLong();
           pressOrigin.current = null;
+          if (started.current && marqueeMode.current) {
+            const box = marqueeRef.current;
+            if (box && box.w > 8 && box.h > 8) {
+              // Keep marquee painted until user confirms via toolbar.
+              setDragging(null);
+              started.current = false;
+              return;
+            }
+          }
           if (started.current) {
             setDragging(null);
           }
           started.current = false;
+          marqueeMode.current = false;
         },
         onPanResponderTerminate: () => {
           clearLong();
           pressOrigin.current = null;
           setDragging(null);
           started.current = false;
+          marqueeMode.current = false;
+          setMarquee(null);
+          marqueeRef.current = null;
         },
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [enabled, ensuringOcr, frame.w, frame.h, pageData],
+    [enabled, frame.w, frame.h, pageData],
   );
 
   const makeHandlePan = (which: 'start' | 'end') =>
@@ -195,6 +282,8 @@ export default function TextSelectOverlay({
 
   if (!enabled) return null;
 
+  const marqueeReady = !!(marquee && marquee.w > 8 && marquee.h > 8 && !started.current);
+
   return (
     <View style={StyleSheet.absoluteFill} {...selectPan.panHandlers}>
       {live &&
@@ -213,6 +302,22 @@ export default function TextSelectOverlay({
             }}
           />
         ))}
+
+      {marquee && (
+        <View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            left: marquee.x,
+            top: marquee.y,
+            width: marquee.w,
+            height: marquee.h,
+            backgroundColor: tintSoft,
+            borderWidth: 1.5,
+            borderColor: tint,
+          }}
+        />
+      )}
 
       {live?.handles && !dragging && (
         <>
@@ -245,7 +350,6 @@ export default function TextSelectOverlay({
         </>
       )}
 
-      {/* While dragging handles, still show knobs without capturing on wrong layer */}
       {live?.handles && dragging && (
         <>
           <View
@@ -304,6 +408,30 @@ export default function TextSelectOverlay({
             <Text style={styles.toolBtnText}>Highlight</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setRange(null)} style={styles.toolGhost}>
+            <Text style={[styles.toolGhostText, { color: mutedColor }]}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {marqueeReady && (
+        <View
+          style={[
+            styles.toolbar,
+            {
+              top: Math.max(8, marquee!.y - 52),
+              left: Math.min(frame.w - 210, Math.max(8, marquee!.x + marquee!.w / 2 - 100)),
+              backgroundColor: surface,
+            },
+          ]}>
+          <TouchableOpacity onPress={confirmMarquee} style={[styles.toolBtn, { backgroundColor: tint }]}>
+            <Text style={styles.toolBtnText}>Highlight</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => {
+              setMarquee(null);
+              marqueeRef.current = null;
+            }}
+            style={styles.toolGhost}>
             <Text style={[styles.toolGhostText, { color: mutedColor }]}>Cancel</Text>
           </TouchableOpacity>
         </View>

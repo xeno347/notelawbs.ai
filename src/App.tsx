@@ -21,7 +21,6 @@ import Animated, {
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useStore } from './store';
 import { useTheme, useThemeStore } from './theme';
-import { GlassView } from './components/ui';
 import { useAuth } from './auth/authStore';
 import { useSessionLock } from './auth/sessionLockStore';
 import { getSetting, setSetting } from './storage';
@@ -30,11 +29,13 @@ import TopBar from './components/TopBar';
 import DocSidebar from './components/DocSidebar';
 import PdfReader from './components/PdfReader';
 import CanvasBoard from './components/CanvasBoard';
+import LinearNotesPanel from './components/LinearNotesPanel';
 import ThreadLayer from './components/ThreadLayer';
 import AnnotationBar from './components/AnnotationBar';
 import ResearchPanel from './components/ResearchPanel';
 import SearchOverlay from './components/SearchOverlay';
 import BookmarkPanel from './components/BookmarkPanel';
+import AnnotationsPanel from './components/AnnotationsPanel';
 import SplashScreen from './components/SplashScreen';
 import AuthScreen from './components/AuthScreen';
 import PermissionsScreen from './components/PermissionsScreen';
@@ -53,13 +54,21 @@ import {
   exportSourcePdf,
   parseProjectBundle,
 } from './services/exportService';
+import { exportAnnotatedPdf } from './services/annotatedPdfExport';
+import {
+  compressPdfCopy,
+  exportPdfTextAsWord,
+  importWordAsPdf,
+} from './services/pdfUtilities';
+import { translateDocumentPages } from './services/documentTranslate';
 import DocumentPicker from 'react-native-document-picker';
 import ReactNativeBlobUtil from 'react-native-blob-util';
-import { useCollab, parseJoinUrl } from './collab/collabStore';
+import { useCollab } from './collab/collabStore';
+import { parseInviteUrl } from './collab/inviteTokens';
 import { useAnnotation } from './annotationStore';
 
-const SIDEBAR_W = 120;
-const DIVIDER_W = 18;
+const SIDEBAR_W = 88;
+const DIVIDER_W = 12;
 
 /**
  * Layout: fixed / resizable PDF pane + freeform OCR canvas.
@@ -84,15 +93,21 @@ function Workspace() {
   const numPages = useStore((s) => s.numPages);
   const docUri = useStore((s) => s.docUri);
   const importCanvasBundle = useStore((s) => s.importCanvasBundle);
+  const openPdf = useStore((s) => s.openPdf);
+  const setTranslations = useStore((s) => s.setTranslations);
+  const setTranslationView = useStore((s) => s.setTranslationView);
 
   const [researchOpen, setResearchOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  const [annotationsOpen, setAnnotationsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [tab, setTab] = useState<'reader' | 'canvas'>('reader');
   const canvasRef = useRef<View>(null);
+  const rightPaneMode = useStore((s) => s.rightPaneMode);
+  const setRightPaneMode = useStore((s) => s.setRightPaneMode);
 
   // Split ratio of the PDF pane within (workspace − sidebar − divider).
   const splitRatio = useSharedValue(0.48);
@@ -164,9 +179,10 @@ function Workspace() {
 
   useEffect(() => {
     const tryJoin = (url: string | null) => {
-      const parsed = url ? parseJoinUrl(url) : null;
-      if (parsed) {
-        useCollab.getState().join(parsed.roomId, parsed.access);
+      if (!url) return;
+      const invite = parseInviteUrl(url);
+      if (invite) {
+        void useCollab.getState().joinInvite(invite);
         setShareOpen(true);
       }
     };
@@ -178,6 +194,37 @@ function Workspace() {
   const dismissOnboarding = () => {
     setShowOnboarding(false);
     setSetting('onboarded', '1').catch(() => {});
+  };
+
+  const onTranslateDoc = () => {
+    const pages = useStore.getState().ocr.pages;
+    const keys = Object.keys(pages).filter((k) => (pages[Number(k)] || '').trim().length > 20);
+    if (!keys.length) {
+      Alert.alert(
+        'No text yet',
+        'Import the PDF text layer or run OCR on a few pages first, then translate to English.',
+      );
+      return;
+    }
+    Alert.alert('Translate to English', `Translate ${Math.min(keys.length, 40)} pages with text?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Translate',
+        onPress: async () => {
+          try {
+            const result = await translateDocumentPages(pages, { maxPages: 40 });
+            setTranslations({ ...useStore.getState().translations, ...result });
+            setTranslationView('side');
+            Alert.alert(
+              'English ready',
+              `${Object.keys(result).length} page(s) translated. Tap EN on the reader pager to cycle views.`,
+            );
+          } catch (e: any) {
+            Alert.alert('Translate failed', e?.message || 'Could not translate this document.');
+          }
+        },
+      },
+    ]);
   };
 
   const onExport = () => {
@@ -215,10 +262,56 @@ function Workspace() {
         },
       },
       {
-        text: 'Word / Docs (.doc)',
+        text: 'Notes → Word (.doc)',
         onPress: () => {
           exportNotesWord(outline).catch(() => {
             Alert.alert('Export failed', 'Could not build the Word export.');
+          });
+        },
+      },
+      {
+        text: 'PDF text → Word (.doc)',
+        onPress: () => {
+          exportPdfTextAsWord({ docName: outline.docName, pages: ocrPages }).catch((e: any) => {
+            Alert.alert('Export failed', e?.message || 'Could not export PDF text to Word.');
+          });
+        },
+      },
+      {
+        text: 'Compress PDF copy',
+        onPress: () => {
+          if (!docUri) {
+            Alert.alert('Export failed', 'Open a PDF first.');
+            return;
+          }
+          compressPdfCopy(docUri, docName || 'document')
+            .then(({ before, after }) => {
+              const saved = Math.max(0, before - after);
+              const pct = before > 0 ? Math.round((saved / before) * 100) : 0;
+              Alert.alert(
+                'Compressed',
+                `${(before / 1024).toFixed(0)} KB → ${(after / 1024).toFixed(0)} KB (${pct}% smaller). Share sheet opened.`,
+              );
+            })
+            .catch((e: any) => {
+              Alert.alert('Compress failed', e?.message || 'Could not compress this PDF.');
+            });
+        },
+      },
+      {
+        text: 'Annotated PDF (baked marks)',
+        onPress: () => {
+          if (!docUri) {
+            Alert.alert('Export failed', 'Open a PDF first.');
+            return;
+          }
+          exportAnnotatedPdf({
+            docUri,
+            docName: outline.docName,
+            highlights,
+            inkStrokes: ink.strokes,
+          }).catch((e: any) => {
+            Alert.alert('Export failed', e?.message || 'Could not bake annotations into the PDF.');
           });
         },
       },
@@ -240,6 +333,19 @@ function Workspace() {
           exportSourcePdf(docUri, docName).catch(() => {
             Alert.alert('Export failed', 'No PDF open to share.');
           });
+        },
+      },
+      {
+        text: 'Import Word → PDF',
+        onPress: async () => {
+          try {
+            const imported = await importWordAsPdf();
+            if (!imported) return;
+            await openPdf(imported.uri, imported.name, { forceNew: true });
+            Alert.alert('Imported', 'Converted to PDF and opened in the library.');
+          } catch (e: any) {
+            Alert.alert('Import failed', e?.message || 'Could not import that file.');
+          }
         },
       },
       {
@@ -299,24 +405,42 @@ function Workspace() {
       <TopBar
         onHome={() => goToLibrary()}
         onResearch={() => setResearchOpen(true)}
+        onTranslate={onTranslateDoc}
         onSearch={() => setSearchOpen(true)}
         onBookmarks={() => setBookmarksOpen(true)}
+        onAnnotations={() => setAnnotationsOpen(true)}
         onExport={onExport}
         onShare={() => setShareOpen(true)}
         onSettings={() => setSettingsOpen(true)}
         researchOpen={researchOpen}
         bookmarksOpen={bookmarksOpen}
+        annotationsOpen={annotationsOpen}
       />
 
       <CollabBanner />
 
       {!isTablet && (
-        <GlassView style={styles.tabGlass}>
-          <View style={styles.tabs}>
+        <View style={[styles.phoneTabRow, { borderBottomColor: p.separator, backgroundColor: p.grouped }]}>
+          <View style={[styles.segment, { backgroundColor: p.fillSecondary }]}>
             <TabBtn label="Reader" active={tab === 'reader'} onPress={() => setTab('reader')} />
-            <TabBtn label="Canvas" active={tab === 'canvas'} onPress={() => setTab('canvas')} />
+            <TabBtn
+              label="Canvas"
+              active={tab === 'canvas' && rightPaneMode === 'canvas'}
+              onPress={() => {
+                setRightPaneMode('canvas');
+                setTab('canvas');
+              }}
+            />
+            <TabBtn
+              label="Notes"
+              active={tab === 'canvas' && rightPaneMode === 'notes'}
+              onPress={() => {
+                setRightPaneMode('notes');
+                setTab('canvas');
+              }}
+            />
           </View>
-        </GlassView>
+        </View>
       )}
 
       <View
@@ -334,15 +458,38 @@ function Workspace() {
             </Animated.View>
             <View style={styles.divider} {...dividerPan.panHandlers}>
               <Animated.View
-                style={[styles.dividerTrack, { backgroundColor: p.separator }, dividerStyle]}
+                style={[styles.dividerTrack, { backgroundColor: p.borderStrong }, dividerStyle]}
               />
+              <View style={[styles.dividerGrip, { backgroundColor: p.fill }]} />
             </View>
             <View style={[styles.pane, { backgroundColor: p.bg }]}>
-              <View ref={canvasRef} collapsable={false} style={styles.flex}>
-                <ErrorBoundary fallbackTitle="Canvas error">
-                  <CanvasBoard />
+              {isTablet && (
+                <View style={[styles.paneModeRow, { borderBottomColor: p.separator }]}>
+                  <View style={[styles.segment, { backgroundColor: p.fillSecondary }]}>
+                    <TabBtn
+                      label="Canvas"
+                      active={rightPaneMode === 'canvas'}
+                      onPress={() => setRightPaneMode('canvas')}
+                    />
+                    <TabBtn
+                      label="Notes"
+                      active={rightPaneMode === 'notes'}
+                      onPress={() => setRightPaneMode('notes')}
+                    />
+                  </View>
+                </View>
+              )}
+              {rightPaneMode === 'notes' ? (
+                <ErrorBoundary fallbackTitle="Notes error">
+                  <LinearNotesPanel />
                 </ErrorBoundary>
-              </View>
+              ) : (
+                <View ref={canvasRef} collapsable={false} style={styles.flex}>
+                  <ErrorBoundary fallbackTitle="Canvas error">
+                    <CanvasBoard />
+                  </ErrorBoundary>
+                </View>
+              )}
             </View>
           </>
         ) : (
@@ -356,6 +503,10 @@ function Workspace() {
                   </ErrorBoundary>
                 </View>
               </View>
+            ) : rightPaneMode === 'notes' ? (
+              <ErrorBoundary fallbackTitle="Notes error">
+                <LinearNotesPanel />
+              </ErrorBoundary>
             ) : (
               <View ref={canvasRef} collapsable={false} style={styles.flex}>
                 <ErrorBoundary fallbackTitle="Canvas error">
@@ -366,12 +517,15 @@ function Workspace() {
           </>
         )}
         <ThreadLayer />
-        <AnnotationBar onFitCanvas={() => useAnnotation.getState().requestFit()} />
+        {rightPaneMode === 'canvas' && (
+          <AnnotationBar onFitCanvas={() => useAnnotation.getState().requestFit()} />
+        )}
       </View>
 
       {researchOpen && <ResearchPanel onClose={() => setResearchOpen(false)} />}
       {searchOpen && <SearchOverlay onClose={() => setSearchOpen(false)} />}
       {bookmarksOpen && <BookmarkPanel onClose={() => setBookmarksOpen(false)} />}
+      {annotationsOpen && <AnnotationsPanel onClose={() => setAnnotationsOpen(false)} />}
       {settingsOpen && <SettingsScreen onClose={() => setSettingsOpen(false)} />}
       {shareOpen && <ShareModal onClose={() => setShareOpen(false)} />}
       {showOnboarding && <OnboardingScreen onDone={dismissOnboarding} />}
@@ -397,11 +551,14 @@ export default function App() {
   const [minElapsed, setMinElapsed] = useState(false);
 
   useEffect(() => {
-    initTheme();
-    authInit();
-    sessionLockInit();
-    const t = setTimeout(() => setMinElapsed(true), 1000);
-    return () => clearTimeout(t);
+    let cancelled = false;
+    (async () => {
+      await Promise.all([initTheme(), authInit(), sessionLockInit()]);
+      if (!cancelled) setMinElapsed(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [initTheme, authInit, sessionLockInit]);
 
   useEffect(() => {
@@ -466,13 +623,19 @@ function TabBtn({ label, active, onPress }: { label: string; active: boolean; on
       onPressIn={() => (press.value = 1)}
       onPressOut={() => (press.value = 0)}
       style={styles.flex}>
-      <Animated.View style={[styles.tabBtn, btnStyle, active && { backgroundColor: p.tintSoft }]}>
+      <Animated.View
+        style={[
+          styles.tabBtn,
+          btnStyle,
+          active && { backgroundColor: p.grouped, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 4, shadowOffset: { width: 0, height: 1 } },
+        ]}>
         <Text
           style={{
             textAlign: 'center',
-            fontWeight: active ? '600' : '400',
-            fontSize: 15,
-            color: active ? p.tint : p.textMid,
+            fontWeight: active ? '600' : '500',
+            fontSize: 14,
+            color: active ? p.text : p.textMid,
+            letterSpacing: -0.2,
           }}>
           {label}
         </Text>
@@ -483,18 +646,47 @@ function TabBtn({ label, active, onPress }: { label: string; active: boolean; on
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  tabGlass: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(128,128,128,0.2)' },
-  tabs: { flexDirection: 'row', paddingHorizontal: 8, paddingVertical: 6, gap: 6 },
-  tabBtn: { paddingVertical: 8, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  phoneTabRow: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  segment: {
+    flexDirection: 'row',
+    borderRadius: 10,
+    padding: 3,
+    gap: 2,
+  },
+  tabBtn: {
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+  },
   workspace: { flex: 1, position: 'relative' },
   workspaceRow: { flexDirection: 'row' },
   phoneRow: { flex: 1, flexDirection: 'row' },
   pane: { flex: 1, minWidth: 0 },
+  paneModeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
   divider: { width: DIVIDER_W, alignItems: 'center', justifyContent: 'center', zIndex: 2 },
   dividerTrack: {
     position: 'absolute',
     top: 0,
     bottom: 0,
-    width: StyleSheet.hairlineWidth * 2,
+    width: StyleSheet.hairlineWidth,
+  },
+  dividerGrip: {
+    width: 4,
+    height: 36,
+    borderRadius: 2,
   },
 });

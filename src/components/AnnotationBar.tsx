@@ -9,6 +9,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import {
   MousePointer2,
+  TextCursor,
   LassoSelect,
   Pen,
   Highlighter,
@@ -26,7 +27,7 @@ import {
 import { useAnnotation, INK_SWATCHES, type ToolMode, isInkTool } from '../annotationStore';
 import { useStore } from '../store';
 import { useViewerLocked } from '../collab/collabStore';
-import { getPalette, useTheme, RADIUS, ELEVATION, glow } from '../theme';
+import { getPalette, useTheme, RADIUS, ELEVATION } from '../theme';
 import { GlassView } from './ui';
 
 export default function AnnotationBar({ onFitCanvas }: { onFitCanvas?: () => void }) {
@@ -92,17 +93,51 @@ export default function AnnotationBar({ onFitCanvas }: { onFitCanvas?: () => voi
 
         <Tool
           icon={MousePointer2}
-          label="Select"
-          active={tool === 'select' || tool === 'navigate'}
+          label="Read"
+          active={tool === 'navigate'}
           onPress={() => setTool('navigate')}
+          p={p}
+        />
+        <Tool
+          icon={TextCursor}
+          label="Text"
+          active={tool === 'select'}
+          onPress={() => pick('select')}
           p={p}
         />
         <Tool icon={LassoSelect} label="Box" active={tool === 'box'} onPress={() => pick('box')} p={p} />
         <View style={s.sep} />
-        <Tool icon={Pen} label="Pen" active={tool === 'pen'} onPress={() => pick('pen')} p={p} />
-        <Tool icon={Highlighter} label="Mark" active={tool === 'highlighter'} onPress={() => pick('highlighter')} p={p} />
-        <Tool icon={Underline} label="Under" active={tool === 'underline'} onPress={() => pick('underline')} p={p} />
-        <Tool icon={Strikethrough} label="Strike" active={tool === 'strikethrough'} onPress={() => pick('strikethrough')} p={p} />
+        <Tool
+          icon={Pen}
+          label="Pen"
+          active={tool === 'pen'}
+          onPress={() => {
+            pick('pen');
+          }}
+          p={p}
+        />
+        <Tool
+          icon={Highlighter}
+          label="Mark"
+          active={tool === 'highlighter'}
+          onPress={() => pick('highlighter')}
+          p={p}
+        />
+        {/* Under / Strike set the mark style, then enter text-select mode. */}
+        <Tool
+          icon={Underline}
+          label="Under"
+          active={tool === 'underline'}
+          onPress={() => pick('underline')}
+          p={p}
+        />
+        <Tool
+          icon={Strikethrough}
+          label="Strike"
+          active={tool === 'strikethrough'}
+          onPress={() => pick('strikethrough')}
+          p={p}
+        />
         <Tool icon={Eraser} label="Erase" active={tool === 'eraser'} onPress={() => pick('eraser')} p={p} />
         <Tool icon={Undo2} label="Undo" onPress={undoStroke} p={p} />
 
@@ -198,12 +233,16 @@ function Tool({
       onPressOut={() => (press.value = 0)}
       hitSlop={4}>
       <Animated.View style={[sTool.btn, btnStyle]}>
-        {        active && (
+        {active && (
           <Animated.View
-            style={[StyleSheet.absoluteFillObject, { borderRadius: 8, backgroundColor: p.tint }, fillStyle]}
+            style={[
+              StyleSheet.absoluteFillObject,
+              { borderRadius: 10, backgroundColor: p.tintSoft },
+              fillStyle,
+            ]}
           />
         )}
-        <Icon size={17} color={active ? '#fff' : p.textMid} strokeWidth={2.2} />
+        <Icon size={17} color={active ? p.tint : p.textMid} strokeWidth={2.1} />
       </Animated.View>
     </Pressable>
   );
@@ -211,9 +250,9 @@ function Tool({
 
 const sTool = StyleSheet.create({
   btn: {
-    width: 38,
-    height: 38,
-    borderRadius: 11,
+    width: 34,
+    height: 34,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -223,79 +262,77 @@ const styles = (p: ReturnType<typeof getPalette>) =>
   StyleSheet.create({
     wrap: {
       position: 'absolute',
-      left: 0,
-      right: 0,
-      bottom: 22,
+      left: 12,
+      right: 12,
+      bottom: 16,
       alignItems: 'center',
       zIndex: 90,
     },
     glassBar: {
-      borderRadius: RADIUS.pill,
+      borderRadius: 22,
       borderWidth: StyleSheet.hairlineWidth,
-      borderColor: 'rgba(128,128,128,0.2)',
+      borderColor: p.glassBorder,
       ...ELEVATION.float,
-      maxWidth: '96%',
+      maxWidth: 720,
+      width: '100%',
     },
     barInner: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 2,
-      paddingHorizontal: 10,
-      paddingVertical: 8,
+      gap: 1,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
       flexWrap: 'wrap',
       justifyContent: 'center',
     },
     dragHandle: {
-      width: 28,
-      height: 38,
+      width: 24,
+      height: 34,
       alignItems: 'center',
       justifyContent: 'center',
       marginRight: 2,
-      borderRightWidth: StyleSheet.hairlineWidth,
-      borderRightColor: p.border,
     },
     sep: {
-      width: 1,
-      height: 26,
-      backgroundColor: p.border,
-      marginHorizontal: 4,
+      width: StyleSheet.hairlineWidth,
+      height: 20,
+      backgroundColor: p.separator,
+      marginHorizontal: 5,
     },
     swatchRow: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 5,
+      gap: 4,
       paddingHorizontal: 2,
     },
     swatchRing: {
-      width: 24,
-      height: 24,
-      borderRadius: 12,
+      width: 22,
+      height: 22,
+      borderRadius: 11,
       alignItems: 'center',
       justifyContent: 'center',
-      borderWidth: 2,
+      borderWidth: 1.5,
       borderColor: 'transparent',
     },
     swatchRingActive: {
-      borderColor: p.tint,
-      backgroundColor: p.tintSoft,
+      borderColor: p.text,
     },
     swatchDot: {
-      width: 16,
-      height: 16,
-      borderRadius: 8,
+      width: 14,
+      height: 14,
+      borderRadius: 7,
     },
     finger: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 5,
-      paddingHorizontal: 11,
-      paddingVertical: 8,
+      gap: 4,
+      paddingHorizontal: 10,
+      paddingVertical: 7,
       borderRadius: RADIUS.pill,
       backgroundColor: p.tint,
-      marginLeft: 4,
+      marginLeft: 2,
     },
     fingerOff: {
       backgroundColor: p.fillSecondary,
     },
-    fingerText: { color: '#fff', fontSize: 11, fontWeight: '700', letterSpacing: 0.2 },
+    fingerText: { color: '#fff', fontSize: 11, fontWeight: '600', letterSpacing: 0.1 },
   });

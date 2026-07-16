@@ -1,6 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import ReactNativeBlobUtil from 'react-native-blob-util';
 import { Platform } from 'react-native';
+import {
+  hashPasswordAsync,
+  verifyPasswordAsync,
+  needsHashUpgrade,
+} from './services/passwordHash';
 
 const WORKSPACE_KEY = 'litnotes.workspace.v1';
 const PROJECTS_KEY = 'litnotes.projects.v1';
@@ -14,16 +19,54 @@ export type Persisted = {
   activeDocId?: string;
   numPages: number;
   currentPage?: number;
-  library: Array<{ id: string; name: string; uri: string }>;
+  library: Array<{
+    id: string;
+    name: string;
+    uri: string;
+    contentHash?: string;
+    byteSize?: number;
+    pageCount?: number;
+    lastOpenedAt?: number;
+    tags?: string[];
+  }>;
   highlights: any[];
   nodes: any[];
   edges: any[];
   ink: { strokes: any[]; links: any[] };
   ocrPages: Record<number, string>;
   ocrLayouts?: Record<number, any>;
+  /** Per-document OCR cache so switching/reopening a doc does not re-scan. */
+  ocrByDocId?: Record<
+    string,
+    {
+      pages: Record<number, string>;
+      layouts: Record<number, any>;
+      failedPages?: number[];
+      source?: 'none' | 'raster' | 'text-layer' | 'cache';
+    }
+  >;
   bookmarks: any[];
   /** Freeform PDF card position/size on the infinite canvas (board coords). */
   docBoard?: { x: number; y: number; w: number; h: number };
+  /** Canvas pan/zoom — restored on reopen (PRD 4.3 lastViewState). */
+  canvasTf?: { s: number; tx: number; ty: number };
+  /** Linear notes blocks alongside the canvas (PRD 4.2). */
+  linearNotes?: Array<{ id: string; text: string; page?: number | null; createdAt: number }>;
+  /** Right pane mode: visual canvas vs linear notes. */
+  rightPaneMode?: 'canvas' | 'notes';
+  /** PDF reader zoom scale (1 = fit-in-pane baseline). */
+  pdfZoom?: number;
+  /** Per-page English translations (PRD 4.8). */
+  translations?: Record<
+    number,
+    {
+      page: number;
+      original: string;
+      english: string;
+      script: string;
+      quality: 'high' | 'medium' | 'low';
+    }
+  >;
 };
 
 export type ProjectMeta = {
@@ -43,8 +86,11 @@ let workspaceScope = 'guest';
 let activeProjectId: string | null = null;
 
 export function setWorkspaceScope(userId: string | null): void {
-  workspaceScope = userId && userId.length ? userId : 'guest';
-  activeProjectId = null;
+  const next = userId && userId.length ? userId : 'guest';
+  if (next !== workspaceScope) {
+    workspaceScope = next;
+    activeProjectId = null;
+  }
 }
 
 export function getWorkspaceScope(): string {
@@ -253,9 +299,8 @@ export async function setSetting(key: string, value: string): Promise<void> {
 
 /* ------------------------------------------------------------------ */
 /* Local auth + session (on-device only — no backend server).          */
-/* Passwords are stored as a lightweight salted hash so the raw value  */
-/* never touches disk. This is a device-local trial gate, not a        */
-/* security boundary; swap in a real provider before production auth.  */
+/* Passwords: PBKDF2-SHA256 (see passwordHash.ts). Legacy djb2 hashes  */
+/* are verified once and upgraded on successful login.                 */
 /* ------------------------------------------------------------------ */
 
 export type AuthUser = {
@@ -268,17 +313,6 @@ export type AuthUser = {
 type StoredUser = AuthUser & { hash: string };
 
 export type Session = { userId: string; email: string; issuedAt: number };
-
-// Deterministic non-cryptographic hash (djb2) with a fixed salt. Adequate to
-// avoid storing plaintext for a local demo; not a substitute for bcrypt.
-function hashPassword(password: string): string {
-  const salted = `lnc::${password}`;
-  let h = 5381;
-  for (let i = 0; i < salted.length; i++) {
-    h = (h * 33) ^ salted.charCodeAt(i);
-  }
-  return (h >>> 0).toString(16);
-}
 
 async function loadUsers(): Promise<Record<string, StoredUser>> {
   try {
@@ -310,7 +344,9 @@ export async function signUp(
 ): Promise<AuthResult> {
   const key = email.trim().toLowerCase();
   if (!key) return { ok: false, error: 'Enter an email address.' };
-  if (password.length < 6) return { ok: false, error: 'Password must be at least 6 characters.' };
+  if (password.length < 8) {
+    return { ok: false, error: 'Password must be at least 8 characters.' };
+  }
   const users = await loadUsers();
   if (users[key]) return { ok: false, error: 'An account with this email already exists.' };
   const user: StoredUser = {
@@ -318,7 +354,7 @@ export async function signUp(
     email: key,
     displayName: displayName.trim() || key.split('@')[0],
     createdAt: Date.now(),
-    hash: hashPassword(password),
+    hash: await hashPasswordAsync(password),
   };
   users[key] = user;
   await saveUsers(users);
@@ -330,7 +366,13 @@ export async function signIn(email: string, password: string): Promise<AuthResul
   const users = await loadUsers();
   const user = users[key];
   if (!user) return { ok: false, error: 'No account found for this email.' };
-  if (user.hash !== hashPassword(password)) return { ok: false, error: 'Incorrect password.' };
+  if (!(await verifyPasswordAsync(password, user.hash))) return { ok: false, error: 'Incorrect password.' };
+  // Transparent upgrade from legacy djb2 / older iteration counts → current PBKDF2.
+  if (needsHashUpgrade(user.hash)) {
+    user.hash = await hashPasswordAsync(password);
+    users[key] = user;
+    await saveUsers(users);
+  }
   return { ok: true, user: toPublic(user) };
 }
 

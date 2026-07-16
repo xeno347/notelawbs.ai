@@ -18,8 +18,10 @@ import {
 import type { CategoryKey } from './theme';
 import type { ResearchResult } from './research/researchCore';
 import type { OcrPageData } from './services/ocrService';
+import { setCloudOcrEnabled } from './services/cloudOcrService';
 import { reanchorText } from './services/reanchor';
 import { unionRects } from './services/textSelection';
+import { hashFileSha256, fileByteSize } from './services/contentHash';
 
 /** Default footprint used when a group node hasn't been resized yet (matches GroupCard's defaults). */
 const GROUP_DEFAULT_W = 280;
@@ -39,6 +41,8 @@ export type Highlight = {
   /** Per-line OCR bounds so multi-line passages highlight text, not whitespace. */
   rects?: Rect[];
   text: string;
+  /** Source language text before translation (when translate was used). */
+  originalText?: string;
   category: CategoryKey;
   note: string;
   docId?: string;
@@ -57,6 +61,8 @@ export type Highlight = {
 
 export type ExcerptData = {
   text: string;
+  /** Pre-translation text kept for fidelity / search. */
+  originalText?: string;
   page: number;
   category: CategoryKey;
   note: string;
@@ -85,7 +91,37 @@ export type FlowNode = {
   data: ExcerptData | AiData | NoteData | GroupData;
 };
 
-export type Edge = { id: string; source: string; target: string; label?: string };
+/** Typed mind-map / argument relations (PRD 4.9). */
+export type EdgeRelation =
+  | 'supports'
+  | 'contradicts'
+  | 'relies_on'
+  | 'distinguishes'
+  | 'related';
+
+export const EDGE_RELATIONS: Array<{ key: EdgeRelation; label: string; color: string }> = [
+  { key: 'supports', label: 'Supports', color: '#27AE60' },
+  { key: 'contradicts', label: 'Contradicts', color: '#C0392B' },
+  { key: 'relies_on', label: 'Relies on', color: '#2980B9' },
+  { key: 'distinguishes', label: 'Distinguishes', color: '#8E44AD' },
+  { key: 'related', label: 'Related', color: '#7F8C8D' },
+];
+
+export type Edge = {
+  id: string;
+  source: string;
+  target: string;
+  label?: string;
+  relation?: EdgeRelation;
+};
+
+export type LinearNoteBlock = {
+  id: string;
+  /** Markdown body (bold/italic/headings/lists). */
+  text: string;
+  page?: number | null;
+  createdAt: number;
+};
 
 export type Stroke = {
   id: string;
@@ -116,12 +152,35 @@ export type Linking = {
   inkPoint: { x: number; y: number } | null;
 };
 
+export type OcrSource = 'none' | 'raster' | 'text-layer' | 'cache';
+
+export type OcrDocCache = {
+  pages: Record<number, string>;
+  layouts: Record<number, OcrPageData>;
+  failedPages: number[];
+  source?: OcrSource;
+};
+
 export type OcrState = {
   pages: Record<number, string>;
   layouts: Record<number, OcrPageData>;
   processingPage: number | null;
+  /** Full-doc OCR running in the background (user can keep reading). */
   scanning: boolean;
-  scanProgress: { done: number; total: number } | null;
+  scanPaused: boolean;
+  /** Pages completed vs total; `current` is the page being captured offscreen. */
+  scanProgress: { done: number; total: number; current: number | null; engine?: 'cloud' | 'device' | null } | null;
+  /**
+   * Pages where capture/recognition failed after retries — distinct from a
+   * page that was genuinely blank. Kept separate from `layouts` so a scan
+   * never silently reports 100% while some pages have no text.
+   */
+  failedPages: number[];
+  /**
+   * How the active document's text was obtained — used to skip re-OCR for
+   * searchable PDFs and to show the right reader chrome.
+   */
+  source: OcrSource;
 };
 
 export type BookmarkSectionKey = 'index' | 'dates' | 'synopsis' | 'issues' | 'annexures';
@@ -159,7 +218,29 @@ function uid(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-export type LibraryDoc = { id: string; name: string; uri: string };
+export type LibraryDoc = {
+  id: string;
+  name: string;
+  uri: string;
+  /** SHA-256 of file bytes for de-duplication (PRD 4.1). */
+  contentHash?: string;
+  byteSize?: number;
+  pageCount?: number;
+  lastOpenedAt?: number;
+  /** Library tags (PRD 4.12). */
+  tags?: string[];
+};
+
+export type ReadingMode = 'page' | 'scroll';
+export type PageRotation = 0 | 90 | 180 | 270;
+
+export type PageTranslation = {
+  page: number;
+  original: string;
+  english: string;
+  script: string;
+  quality: 'high' | 'medium' | 'low';
+};
 
 export type DocBoard = { x: number; y: number; w: number; h: number };
 
@@ -173,11 +254,16 @@ type StoreState = {
   projectTitle: string;
   autoOcr: boolean;
   setAutoOcr: (v: boolean) => void;
+  /** Prefer OCR.space cloud recognition when a key is configured. */
+  preferCloudOcr: boolean;
+  setPreferCloudOcr: (v: boolean) => void;
   clearInMemory: () => void;
   docName: string;
   docUri: string;
   activeDocId: string;
   library: LibraryDoc[];
+  /** Per-document OCR so reopening / switching docs does not wipe progress. */
+  ocrByDocId: Record<string, OcrDocCache>;
   numPages: number;
   currentPage: number;
   highlights: Highlight[];
@@ -193,6 +279,27 @@ type StoreState = {
   bookmarks: Bookmark[];
   docBoard: DocBoard;
   setDocBoard: (b: Partial<DocBoard>) => void;
+  /** Linear notes (PRD 4.2) — preserved when switching to Canvas mode. */
+  linearNotes: LinearNoteBlock[];
+  rightPaneMode: 'canvas' | 'notes';
+  setRightPaneMode: (mode: 'canvas' | 'notes') => void;
+  addLinearNote: (text?: string, page?: number | null) => LinearNoteBlock;
+  updateLinearNote: (id: string, patch: Partial<Pick<LinearNoteBlock, 'text' | 'page'>>) => void;
+  removeLinearNote: (id: string) => void;
+  /** PDF reader zoom multiplier (1 = baseline fit-in-pane). */
+  pdfZoom: number;
+  setPdfZoom: (z: number) => void;
+  readingMode: ReadingMode;
+  setReadingMode: (m: ReadingMode) => void;
+  pageRotation: PageRotation;
+  rotatePage: (delta: 90 | -90) => void;
+  setPageRotation: (r: PageRotation) => void;
+  /** Per-page English translations (PRD 4.8). */
+  translations: Record<number, PageTranslation>;
+  setTranslations: (t: Record<number, PageTranslation>) => void;
+  translationView: 'original' | 'english' | 'side';
+  setTranslationView: (v: 'original' | 'english' | 'side') => void;
+  updateLibraryDoc: (id: string, patch: Partial<LibraryDoc>) => void;
 
   // absolute window geometry for cross-pane threads
   pdfFrame: { left: number; top: number; w: number; h: number } | null;
@@ -220,7 +327,11 @@ type StoreState = {
   openProject: (id: string) => Promise<void>;
   renameProject: (id: string, title: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
-  openPdf: (uri: string, name: string) => Promise<void>;
+  openPdf: (
+    uri: string,
+    name: string,
+    opts?: { forceNew?: boolean },
+  ) => Promise<{ deduped?: boolean; id: string }>;
   selectLibraryDoc: (id: string) => void;
   setDocMeta: (numPages: number) => void;
   setCurrentPage: (page: number) => void;
@@ -235,11 +346,12 @@ type StoreState = {
       enableThreads?: boolean;
       markStyle?: MarkStyle;
       tags?: string[];
+      skipHistory?: boolean;
     },
   ) => { highlight: Highlight; node: FlowNode };
 
   nextDropPos: () => { x: number; y: number };
-  addExcerptNode: (data: ExcerptData) => FlowNode;
+  addExcerptNode: (data: ExcerptData, opts?: { skipHistory?: boolean }) => FlowNode;
   addAiNode: (data: AiData) => FlowNode;
   addNoteNode: (text?: string) => FlowNode;
   addGroupNode: (title?: string) => FlowNode;
@@ -249,8 +361,8 @@ type StoreState = {
   bringNodeToFront: (id: string) => void;
   sendNodeToBack: (id: string) => void;
   removeNode: (id: string) => void;
-  addEdge: (source: string, target: string, label?: string) => void;
-  updateEdge: (id: string, patch: Partial<Pick<Edge, 'label'>>) => void;
+  addEdge: (source: string, target: string, label?: string, relation?: EdgeRelation) => void;
+  updateEdge: (id: string, patch: Partial<Pick<Edge, 'label' | 'relation'>>) => void;
   removeEdge: (id: string) => void;
 
   /** Assign / clear a card's containing group by testing its center against group bounds. */
@@ -289,8 +401,19 @@ type StoreState = {
 
   setOcrPageText: (page: number, text: string) => void;
   setOcrPageData: (page: number, data: OcrPageData) => void;
+  /** Bulk-import layouts (e.g. embedded PDF text layer) and mark the source. */
+  setOcrLayoutsBulk: (
+    layouts: Record<number, OcrPageData>,
+    source: 'raster' | 'text-layer' | 'cache',
+  ) => void;
+  setOcrPageFailed: (page: number) => void;
+  resetOcrFailedPages: () => void;
   setOcrProcessingPage: (page: number | null) => void;
-  setOcrScanning: (scanning: boolean, progress?: { done: number; total: number } | null) => void;
+  setOcrScanning: (
+    scanning: boolean,
+    progress?: { done: number; total: number; current?: number | null; engine?: 'cloud' | 'device' | null } | null,
+  ) => void;
+  setOcrScanPaused: (paused: boolean) => void;
 
   addBookmark: (b: Omit<Bookmark, 'id' | 'order'>) => Bookmark;
   updateBookmark: (id: string, patch: Partial<Omit<Bookmark, 'id'>>) => void;
@@ -327,7 +450,47 @@ export type CanvasSync = {
   bookmarks: Bookmark[];
 };
 
+const emptyOcrState = (): OcrState => ({
+  pages: {},
+  layouts: {},
+  processingPage: null,
+  scanning: false,
+  scanPaused: false,
+  scanProgress: null,
+  failedPages: [],
+  source: 'none',
+});
+
+function cacheFromOcr(ocr: OcrState): OcrDocCache {
+  return {
+    pages: { ...ocr.pages },
+    layouts: { ...ocr.layouts },
+    failedPages: [...ocr.failedPages],
+    source: ocr.source,
+  };
+}
+
+function ocrFromCache(cache: OcrDocCache | undefined): OcrState {
+  if (!cache) return emptyOcrState();
+  const layoutCount = Object.keys(cache.layouts || {}).length;
+  const cachedSource = cache.source && cache.source !== 'none' ? cache.source : 'cache';
+  return {
+    pages: { ...(cache.pages || {}) },
+    layouts: { ...(cache.layouts || {}) },
+    processingPage: null,
+    scanning: false,
+    scanPaused: false,
+    scanProgress: null,
+    failedPages: [...(cache.failedPages || [])],
+    source: layoutCount ? cachedSource : 'none',
+  };
+}
+
 function snapshot(s: StoreState): Persisted {
+  const ocrByDocId = { ...s.ocrByDocId };
+  if (s.activeDocId) {
+    ocrByDocId[s.activeDocId] = cacheFromOcr(s.ocr);
+  }
   return {
     docName: s.docName,
     docUri: s.docUri,
@@ -341,8 +504,14 @@ function snapshot(s: StoreState): Persisted {
     ink: s.ink,
     ocrPages: s.ocr.pages,
     ocrLayouts: s.ocr.layouts,
+    ocrByDocId,
     bookmarks: s.bookmarks,
     docBoard: s.docBoard,
+    canvasTf: s.canvasTf,
+    linearNotes: s.linearNotes,
+    rightPaneMode: s.rightPaneMode,
+    pdfZoom: s.pdfZoom,
+    translations: s.translations,
   };
 }
 
@@ -351,15 +520,24 @@ const emptyWorkspace = {
   docUri: '',
   activeDocId: '',
   library: [] as LibraryDoc[],
+  ocrByDocId: {} as Record<string, OcrDocCache>,
   numPages: 0,
   currentPage: 1,
   highlights: [] as Highlight[],
   nodes: [] as FlowNode[],
   edges: [] as Edge[],
   ink: { strokes: [] as Stroke[], links: [] as InkLink[] },
-  ocr: { pages: {} as Record<number, string>, layouts: {} as Record<number, OcrPageData>, processingPage: null as number | null, scanning: false, scanProgress: null as { done: number; total: number } | null },
+  ocr: emptyOcrState(),
   bookmarks: [] as Bookmark[],
   docBoard: { ...DEFAULT_DOC_BOARD },
+  linearNotes: [] as LinearNoteBlock[],
+  rightPaneMode: 'canvas' as const,
+  pdfZoom: 1,
+  readingMode: 'page' as ReadingMode,
+  pageRotation: 0 as PageRotation,
+  translations: {} as Record<number, PageTranslation>,
+  translationView: 'original' as const,
+  canvasTf: { s: 1, tx: 20, ty: 20 },
   history: { ...emptyHistory },
 };
 
@@ -371,20 +549,56 @@ function applyPersisted(data: Persisted) {
         ? [{ id: data.activeDocId || 'legacy', name: data.docName || 'Document', uri: data.docUri }]
         : [];
   const active = lib.find((d) => d.id === data.activeDocId) || lib.find((d) => d.uri === data.docUri) || lib[0];
+  const ocrByDocId: Record<string, OcrDocCache> = {};
+  Object.entries(data.ocrByDocId || {}).forEach(([docId, cache]) => {
+    ocrByDocId[docId] = {
+      pages: cache.pages || {},
+      layouts: cache.layouts || {},
+      failedPages: cache.failedPages || [],
+      source: cache.source,
+    };
+  });
+  // Migrate legacy flat OCR into the active doc's cache.
+  if (active?.id && !ocrByDocId[active.id] && (data.ocrLayouts || data.ocrPages)) {
+    ocrByDocId[active.id] = {
+      pages: data.ocrPages || {},
+      layouts: data.ocrLayouts || {},
+      failedPages: [],
+    };
+  }
+  const activeCache = active?.id ? ocrByDocId[active.id] : undefined;
   return {
     docName: data.docName || '',
     docUri: data.docUri || '',
     activeDocId: active?.id || '',
     library: lib,
+    ocrByDocId,
     numPages: data.numPages || 0,
     currentPage: data.currentPage && data.currentPage > 0 ? data.currentPage : 1,
     highlights: data.highlights || [],
     nodes: (data.nodes || []).filter((n: FlowNode) => n.type !== ('ink' as any)),
     edges: data.edges || [],
     ink: data.ink || { strokes: [], links: [] },
-    ocr: { pages: data.ocrPages || {}, layouts: data.ocrLayouts || {}, processingPage: null, scanning: false, scanProgress: null },
+    ocr: ocrFromCache(activeCache),
     bookmarks: data.bookmarks || [],
     docBoard: data.docBoard && data.docBoard.w > 100 ? data.docBoard : { ...DEFAULT_DOC_BOARD },
+    linearNotes: Array.isArray(data.linearNotes) ? data.linearNotes : [],
+    rightPaneMode: (data.rightPaneMode === 'notes' ? 'notes' : 'canvas') as 'canvas' | 'notes',
+    pdfZoom:
+      typeof data.pdfZoom === 'number' && data.pdfZoom >= 0.5 && data.pdfZoom <= 4
+        ? data.pdfZoom
+        : 1,
+    translations: (data.translations || {}) as Record<number, PageTranslation>,
+    translationView: 'original' as const,
+    readingMode: 'page' as ReadingMode,
+    pageRotation: 0 as PageRotation,
+    canvasTf:
+      data.canvasTf &&
+      typeof data.canvasTf.s === 'number' &&
+      data.canvasTf.s > 0.05 &&
+      data.canvasTf.s <= 4
+        ? data.canvasTf
+        : { s: 1, tx: 20, ty: 20 },
     history: { ...emptyHistory },
   };
 }
@@ -396,6 +610,7 @@ export const useStore = create<StoreState>((set, get) => ({
   projectId: null,
   projectTitle: '',
   autoOcr: true,
+  preferCloudOcr: true,
   ...emptyWorkspace,
   threadsOn: true,
   snapToGrid: false,
@@ -417,11 +632,61 @@ export const useStore = create<StoreState>((set, get) => ({
     set((s) => ({ docBoard: { ...s.docBoard, ...patch } }));
     saveWorkspaceDebounced(snapshot(get()));
   },
+  setRightPaneMode: (mode) => {
+    set({ rightPaneMode: mode });
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+  addLinearNote: (text = '', page = null) => {
+    const block: LinearNoteBlock = {
+      id: uid(),
+      text,
+      page: page ?? get().currentPage ?? null,
+      createdAt: Date.now(),
+    };
+    set((s) => ({ linearNotes: [block, ...s.linearNotes] }));
+    saveWorkspaceDebounced(snapshot(get()));
+    return block;
+  },
+  updateLinearNote: (id, patch) => {
+    set((s) => ({
+      linearNotes: s.linearNotes.map((n) => (n.id === id ? { ...n, ...patch } : n)),
+    }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+  removeLinearNote: (id) => {
+    set((s) => ({ linearNotes: s.linearNotes.filter((n) => n.id !== id) }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+  setPdfZoom: (z) => {
+    const zoom = Math.min(4, Math.max(0.5, Number.isFinite(z) ? z : 1));
+    set({ pdfZoom: zoom });
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+  setReadingMode: (m) => set({ readingMode: m }),
+  setPageRotation: (r) => set({ pageRotation: r }),
+  rotatePage: (delta) => {
+    const cur = get().pageRotation;
+    const next = ((((cur + delta) % 360) + 360) % 360) as PageRotation;
+    set({ pageRotation: next });
+  },
+  setTranslations: (t) => {
+    set({ translations: t });
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+  setTranslationView: (v) => set({ translationView: v }),
+  updateLibraryDoc: (id, patch) => {
+    set((s) => ({
+      library: s.library.map((d) => (d.id === id ? { ...d, ...patch } : d)),
+    }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
   setCanvasOrigin: (o) => set({ canvasOrigin: o }),
-  setCanvasTf: (t) =>
-    set((s) =>
-      s.canvasTf.s === t.s && s.canvasTf.tx === t.tx && s.canvasTf.ty === t.ty ? s : { canvasTf: t },
-    ),
+  setCanvasTf: (t) => {
+    const prev = get().canvasTf;
+    if (prev.s === t.s && prev.tx === t.tx && prev.ty === t.ty) return;
+    set({ canvasTf: t });
+    saveWorkspaceDebounced(snapshot(get()));
+  },
   setCanvasViewport: (v) => set({ canvasViewport: v }),
   setNodeSize: (id, size) =>
     set((s) => {
@@ -441,6 +706,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   hydrate: async () => {
     const autoOcrRaw = await getSetting('autoOcr');
+    const preferCloudRaw = await getSetting('preferCloudOcr');
     // Default ON for scanned PDFs (PRD OCR pipeline) unless user turned it off.
     const index = await migrateLegacyWorkspaceIfNeeded();
     set({
@@ -450,6 +716,7 @@ export const useStore = create<StoreState>((set, get) => ({
       view: 'library',
       ...emptyWorkspace,
       autoOcr: autoOcrRaw !== '0',
+      preferCloudOcr: preferCloudRaw !== '0',
       hydrated: true,
     });
   },
@@ -534,6 +801,12 @@ export const useStore = create<StoreState>((set, get) => ({
     setSetting('autoOcr', v ? '1' : '0').catch(() => {});
   },
 
+  setPreferCloudOcr: (v) => {
+    set({ preferCloudOcr: v });
+    setSetting('preferCloudOcr', v ? '1' : '0').catch(() => {});
+    void setCloudOcrEnabled(v);
+  },
+
   clearInMemory: () => {
     dropCounter = 0;
     set({
@@ -578,51 +851,101 @@ export const useStore = create<StoreState>((set, get) => ({
     saveWorkspaceDebounced(snapshot(get()));
   },
 
-  openPdf: async (uri, name) => {
+  openPdf: async (uri, name, opts) => {
+    let contentHash = '';
+    let byteSize = 0;
+    try {
+      contentHash = await hashFileSha256(uri);
+      byteSize = await fileByteSize(uri);
+    } catch {
+      /* hash optional on pick failures */
+    }
+
+    // De-dupe by content hash (PRD 4.1) unless caller forces a new copy.
+    if (contentHash && !opts?.forceNew) {
+      const byHash = get().library.find((d) => d.contentHash && d.contentHash === contentHash);
+      if (byHash) {
+        get().selectLibraryDoc(byHash.id);
+        get().updateLibraryDoc(byHash.id, { lastOpenedAt: Date.now(), byteSize: byteSize || byHash.byteSize });
+        return { deduped: true, id: byHash.id };
+      }
+    }
+
     const existing = get().library.find((d) => d.name === name);
     const id = existing?.id || uid();
     const stored = await persistPdf(uri, name, id);
     set((s) => {
+      const ocrByDocId = { ...s.ocrByDocId };
+      if (s.activeDocId && s.activeDocId !== id) {
+        ocrByDocId[s.activeDocId] = cacheFromOcr(s.ocr);
+      }
+      const restored = ocrFromCache(ocrByDocId[id]);
+      const meta = {
+        contentHash: contentHash || existing?.contentHash,
+        byteSize: byteSize || existing?.byteSize,
+        lastOpenedAt: Date.now(),
+        tags: existing?.tags || [],
+      };
       if (existing) {
         return {
-          library: s.library.map((d) => (d.id === existing.id ? { ...d, uri: stored } : d)),
+          library: s.library.map((d) => (d.id === existing.id ? { ...d, uri: stored, ...meta } : d)),
           activeDocId: existing.id,
           docName: name,
           docUri: stored,
           currentPage: 1,
-          ocr: { pages: {}, layouts: {}, processingPage: null, scanning: false, scanProgress: null },
-          bookmarks: [],
+          pageRotation: 0 as PageRotation,
+          ocrByDocId,
+          ocr: restored,
         };
       }
-      const entry: LibraryDoc = { id, name, uri: stored };
+      const entry: LibraryDoc = { id, name, uri: stored, ...meta };
       return {
         library: [...s.library, entry],
         activeDocId: id,
         docName: name,
         docUri: stored,
         currentPage: 1,
-        ocr: { pages: {}, layouts: {}, processingPage: null, scanning: false, scanProgress: null },
-        bookmarks: [],
+        pageRotation: 0 as PageRotation,
+        ocrByDocId,
+        ocr: restored,
       };
     });
     saveWorkspaceDebounced(snapshot(get()));
+    return { deduped: false, id };
   },
 
   selectLibraryDoc: (id) => {
     const doc = get().library.find((d) => d.id === id);
     if (!doc) return;
-    set({
-      activeDocId: doc.id,
-      docName: doc.name,
-      docUri: doc.uri,
-      currentPage: 1,
-      ocr: { pages: {}, layouts: {}, processingPage: null, scanning: false, scanProgress: null },
+    set((s) => {
+      const ocrByDocId = { ...s.ocrByDocId };
+      if (s.activeDocId) {
+        ocrByDocId[s.activeDocId] = cacheFromOcr(s.ocr);
+      }
+      return {
+        activeDocId: doc.id,
+        docName: doc.name,
+        docUri: doc.uri,
+        currentPage: 1,
+        pageRotation: 0 as PageRotation,
+        ocrByDocId,
+        ocr: ocrFromCache(ocrByDocId[doc.id]),
+        library: s.library.map((d) =>
+          d.id === doc.id ? { ...d, lastOpenedAt: Date.now() } : d,
+        ),
+      };
     });
     saveWorkspaceDebounced(snapshot(get()));
   },
 
   setDocMeta: (numPages) => {
-    set({ numPages });
+    const id = get().activeDocId;
+    set((s) => ({
+      numPages,
+      library: id
+        ? s.library.map((d) => (d.id === id ? { ...d, pageCount: numPages } : d))
+        : s.library,
+    }));
     saveWorkspaceDebounced(snapshot(get()));
   },
 
@@ -656,22 +979,27 @@ export const useStore = create<StoreState>((set, get) => ({
       rect: data.rect,
       rects: data.rects,
       text: data.text,
+      originalText: data.originalText,
       category: data.category,
       note: data.note,
       docId,
       markStyle: data.markStyle || 'highlight',
       tags,
     });
-    const node = get().addExcerptNode({
-      text: data.text,
-      page: data.page,
-      category: data.category,
-      note: data.note,
-      highlightId: highlight.id,
-      docName: data.docName,
-      docId,
-      tags,
-    });
+    const node = get().addExcerptNode(
+      {
+        text: data.text,
+        originalText: data.originalText,
+        page: data.page,
+        category: data.category,
+        note: data.note,
+        highlightId: highlight.id,
+        docName: data.docName,
+        docId,
+        tags,
+      },
+      { skipHistory: data.skipHistory },
+    );
     if (data.enableThreads !== false && !get().threadsOn) get().toggleThreads();
     return { highlight, node };
   },
@@ -727,8 +1055,8 @@ export const useStore = create<StoreState>((set, get) => ({
     };
   },
 
-  addExcerptNode: (data) => {
-    get().commitHistory();
+  addExcerptNode: (data, opts) => {
+    if (!opts?.skipHistory) get().commitHistory();
     const pos = get().nextDropPos();
     const maxZ = get().nodes.reduce((m, n) => Math.max(m, n.z || 0), 0);
     const node: FlowNode = {
@@ -915,13 +1243,24 @@ export const useStore = create<StoreState>((set, get) => ({
 
   removeNode: (id) => {
     get().commitHistory();
+    const removed = get().nodes.find((n) => n.id === id);
+    const orphanHighlightId =
+      removed?.type === 'excerpt' ? (removed.data as ExcerptData).highlightId : undefined;
     set((s) => {
-      const removed = s.nodes.find((n) => n.id === id);
       const nodes = s.nodes
         .filter((n) => n.id !== id)
         .map((n) => (removed?.type === 'group' && n.groupId === id ? { ...n, groupId: undefined } : n));
+      const stillLinked =
+        orphanHighlightId &&
+        nodes.some(
+          (n) => n.type === 'excerpt' && (n.data as ExcerptData).highlightId === orphanHighlightId,
+        );
       return {
         nodes,
+        highlights:
+          orphanHighlightId && !stillLinked
+            ? s.highlights.filter((h) => h.id !== orphanHighlightId)
+            : s.highlights,
         edges: s.edges.filter((e) => e.source !== id && e.target !== id),
         nodeSizes: Object.fromEntries(Object.entries(s.nodeSizes).filter(([nodeId]) => nodeId !== id)),
         nodeAnchors: Object.fromEntries(Object.entries(s.nodeAnchors).filter(([nodeId]) => nodeId !== id)),
@@ -930,22 +1269,42 @@ export const useStore = create<StoreState>((set, get) => ({
     saveWorkspaceDebounced(snapshot(get()));
   },
 
-  addEdge: (source, target, label) => {
+  addEdge: (source, target, label, relation) => {
     if (source === target) return;
     const exists = get().edges.some((e) => e.source === source && e.target === target);
     if (exists) return;
     get().commitHistory();
+    const rel = relation || 'related';
+    const meta = EDGE_RELATIONS.find((r) => r.key === rel);
     set((s) => ({
-      edges: [...s.edges, { id: uid(), source, target, label: label?.trim() || undefined }],
+      edges: [
+        ...s.edges,
+        {
+          id: uid(),
+          source,
+          target,
+          relation: rel,
+          label: label?.trim() || meta?.label,
+        },
+      ],
     }));
     saveWorkspaceDebounced(snapshot(get()));
   },
 
   updateEdge: (id, patch) => {
     set((s) => ({
-      edges: s.edges.map((e) =>
-        e.id === id ? { ...e, label: patch.label?.trim() || undefined } : e,
-      ),
+      edges: s.edges.map((e) => {
+        if (e.id !== id) return e;
+        const relation = patch.relation !== undefined ? patch.relation : e.relation;
+        const meta = relation ? EDGE_RELATIONS.find((r) => r.key === relation) : undefined;
+        const label =
+          patch.label !== undefined
+            ? patch.label?.trim() || undefined
+            : patch.relation
+              ? meta?.label || e.label
+              : e.label;
+        return { ...e, relation, label };
+      }),
     }));
     saveWorkspaceDebounced(snapshot(get()));
   },
@@ -1061,21 +1420,84 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   setOcrPageData: (page, data) => {
-    set((s) => ({
-      ocr: {
+    set((s) => {
+      const ocr: OcrState = {
         ...s.ocr,
         pages: { ...s.ocr.pages, [page]: data.text },
         layouts: { ...s.ocr.layouts, [page]: data },
         processingPage: null,
-      },
-    }));
+        failedPages: s.ocr.failedPages.length
+          ? s.ocr.failedPages.filter((pg) => pg !== page)
+          : s.ocr.failedPages,
+        source: s.ocr.source === 'text-layer' ? 'text-layer' : s.ocr.source === 'none' ? 'raster' : s.ocr.source,
+      };
+      const ocrByDocId = s.activeDocId
+        ? { ...s.ocrByDocId, [s.activeDocId]: cacheFromOcr(ocr) }
+        : s.ocrByDocId;
+      return { ocr, ocrByDocId };
+    });
     saveWorkspaceDebounced(snapshot(get()));
   },
+
+  setOcrLayoutsBulk: (layouts, source) => {
+    const pages: Record<number, string> = {};
+    Object.entries(layouts).forEach(([k, data]) => {
+      pages[Number(k)] = data.text;
+    });
+    set((s) => {
+      const ocr: OcrState = {
+        ...s.ocr,
+        pages,
+        layouts: { ...layouts },
+        processingPage: null,
+        scanning: false,
+        scanPaused: false,
+        scanProgress: null,
+        failedPages: [],
+        source,
+      };
+      const ocrByDocId = s.activeDocId
+        ? { ...s.ocrByDocId, [s.activeDocId]: cacheFromOcr(ocr) }
+        : s.ocrByDocId;
+      return { ocr, ocrByDocId };
+    });
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  setOcrPageFailed: (page) =>
+    set((s) => ({
+      ocr: {
+        ...s.ocr,
+        processingPage: null,
+        failedPages: s.ocr.failedPages.includes(page) ? s.ocr.failedPages : [...s.ocr.failedPages, page],
+      },
+    })),
+
+  resetOcrFailedPages: () => set((s) => ({ ocr: { ...s.ocr, failedPages: [] } })),
 
   setOcrProcessingPage: (page) => set((s) => ({ ocr: { ...s.ocr, processingPage: page } })),
 
   setOcrScanning: (scanning, progress = null) =>
-    set((s) => ({ ocr: { ...s.ocr, scanning, scanProgress: scanning ? progress : null } })),
+    set((s) => ({
+      ocr: {
+        ...s.ocr,
+        scanning,
+        scanPaused: scanning ? s.ocr.scanPaused : false,
+        scanProgress: scanning
+          ? {
+              done: progress?.done ?? s.ocr.scanProgress?.done ?? 0,
+              total: progress?.total ?? s.ocr.scanProgress?.total ?? 0,
+              current: progress?.current !== undefined ? progress.current : s.ocr.scanProgress?.current ?? null,
+              engine:
+                progress?.engine !== undefined
+                  ? progress.engine
+                  : s.ocr.scanProgress?.engine ?? null,
+            }
+          : null,
+      },
+    })),
+
+  setOcrScanPaused: (paused) => set((s) => ({ ocr: { ...s.ocr, scanPaused: paused } })),
 
   addBookmark: (b) => {
     const section = get().bookmarks.filter((x) => x.section === b.section);

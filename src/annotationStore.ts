@@ -52,7 +52,8 @@ function markStyleForTool(tool: ToolMode, prev: MarkStyle): MarkStyle {
 export const useAnnotation = create<AnnotationState>((set) => ({
   tool: 'navigate',
   inkColor: 0,
-  fingerDraw: false,
+  /** Default on so Pen/Mark/Erase work with finger (simulator / no Pencil). */
+  fingerDraw: true,
   fitSerial: 0,
   barOffset: { x: 0, y: 0 },
   markStyle: 'highlight',

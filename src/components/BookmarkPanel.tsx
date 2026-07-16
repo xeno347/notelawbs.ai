@@ -98,7 +98,11 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
     <ScaleDecorator>
       <TouchableOpacity
         style={[s.row, isActive && s.rowDragging, item.depth > 0 && { marginLeft: 18 * item.depth }]}
-        onPress={() => startEdit(item)}
+        onPress={() => {
+          // Primary action: jump to page for court-speed navigation (PRD 4.10 / 6.3).
+          if (item.page != null) jumpToPage(item.page);
+          else startEdit(item);
+        }}
         onLongPress={drag}
         delayLongPress={180}>
         <View style={s.rowMain}>
@@ -114,8 +118,17 @@ export default function BookmarkPanel({ onClose }: { onClose: () => void }) {
               {item.note}
             </Text>
           )}
+          {item.page != null && (
+            <Text style={s.rowRange}>
+              pp. {item.page}
+              {item.endPage && item.endPage > item.page ? `–${item.endPage}` : ''}
+            </Text>
+          )}
         </View>
         <View style={s.rowActions}>
+          <TouchableOpacity style={s.nestBtn} onPress={() => startEdit(item)}>
+            <Text style={s.nestText}>Edit</Text>
+          </TouchableOpacity>
           <TouchableOpacity
             style={s.nestBtn}
             onPress={() => {
@@ -339,6 +352,7 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     rowDate: { fontSize: 11, color: p.accent, fontWeight: '700', marginBottom: 2 },
     rowTitle: { fontSize: 14, color: p.text, fontWeight: '700' },
     rowNote: { fontSize: 12, color: p.textMid, marginTop: 4, lineHeight: 17 },
+    rowRange: { fontSize: 11, fontWeight: '700', color: p.tint, marginTop: 4 },
     rowActions: { alignItems: 'flex-end', gap: 6 },
     pagePill: {
       paddingHorizontal: 8,

@@ -103,7 +103,11 @@ export function selectionFromRange(
   });
   const rects = [...byLine.entries()]
     .sort(([a], [b]) => a - b)
-    .map(([, lineWords]) => unionRects(lineWords.map((word) => word.rect)));
+    .map(([, lineWords]) => {
+      const union = unionRects(lineWords.map((word) => word.rect));
+      // Slight vertical pad so fills read like iOS Notes highlighter ink.
+      return padRect(union, 0.0012);
+    });
 
   return {
     text: slice.map((word) => word.text).join(' '),
@@ -262,6 +266,37 @@ export function textInside(page: OcrPageData | undefined, rect: Rect): string {
     .map((line) => line.text)
     .join(' ')
     .trim();
+}
+
+/**
+ * Box / lasso selection → native multi-line highlight rects when OCR is available.
+ * Falls back to the marquee itself when the page has no words yet.
+ */
+export function selectionFromMarquee(
+  page: OcrPageData | undefined,
+  marquee: Rect,
+): SelectionHit | null {
+  if (!page) {
+    return { text: '', rect: marquee, rects: [marquee], kind: 'paragraph' };
+  }
+  const words = flattenWords(page);
+  const hitIdx = words
+    .map((w, i) => (rectOverlap(w.rect, marquee) > 0.35 ? i : -1))
+    .filter((i) => i >= 0);
+  if (hitIdx.length) {
+    return selectionFromRange(words, Math.min(...hitIdx), Math.max(...hitIdx));
+  }
+  const lines = refinedLines(page).filter((line) => rectOverlap(line.rect, marquee) > 0.22);
+  if (!lines.length) {
+    return { text: '', rect: marquee, rects: [marquee], kind: 'paragraph' };
+  }
+  const rects = lines.map((line) => padRect(line.rect, 0.0015));
+  return {
+    text: lines.map((l) => l.text).join(' ').trim(),
+    rect: unionRects(rects),
+    rects,
+    kind: 'paragraph',
+  };
 }
 
 export function unionRects(rects: OcrRect[]): OcrRect {

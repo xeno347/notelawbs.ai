@@ -72,7 +72,7 @@ function buildCandidates(pages: Record<number, OcrPageData>): Candidate[] {
             })();
       chunks.forEach((chunk, chunkIndex) => {
         const text = normalize(chunk.text);
-        if (text.length < 45 || text.length > 1200 || chunk.rect.w < 0.08 || chunk.rect.h < 0.008) return;
+        if (text.length < 35 || text.length > 1200 || chunk.rect.w < 0.06 || chunk.rect.h < 0.006) return;
         const score = importanceScore(text, chunk.rect);
         candidates.push({
           id: `p${page}b${blockIndex}c${chunkIndex}`,
@@ -142,12 +142,24 @@ function importanceScore(text: string, rect: OcrRect): number {
 function selectLocal(candidates: Candidate[]): ImportantPassage[] {
   const selected: Candidate[] = [];
   const perPage = new Map<number, number>();
-  for (const candidate of candidates) {
+  // Prefer high-scoring cues, but still surface readable OCR when cues are sparse.
+  const ranked = [...candidates].sort((a, b) => b.score - a.score || a.page - b.page);
+  for (const candidate of ranked) {
     if (selected.length >= MAX_PASSAGES) break;
     if ((perPage.get(candidate.page) || 0) >= 2) continue;
     if (selected.some((item) => similarity(item.text, candidate.text) > 0.72)) continue;
+    // Skip near-empty / header noise unless we have almost nothing else.
+    if (candidate.score < 2 && selected.length >= 4) continue;
     selected.push(candidate);
     perPage.set(candidate.page, (perPage.get(candidate.page) || 0) + 1);
+  }
+  // Guarantee at least a few cards when OCR produced text but cue scores were flat.
+  if (!selected.length && ranked.length) {
+    for (const candidate of ranked) {
+      if (selected.length >= Math.min(6, MAX_PASSAGES)) break;
+      if (selected.some((item) => similarity(item.text, candidate.text) > 0.72)) continue;
+      selected.push(candidate);
+    }
   }
   return selected
     .sort((a, b) => a.page - b.page || a.rect.y - b.rect.y)

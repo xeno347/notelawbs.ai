@@ -1,4 +1,12 @@
-export type SearchHitKind = 'highlight' | 'excerpt' | 'ai' | 'ocr' | 'note' | 'group' | 'bookmark';
+export type SearchHitKind =
+  | 'highlight'
+  | 'excerpt'
+  | 'ai'
+  | 'ocr'
+  | 'note'
+  | 'group'
+  | 'bookmark'
+  | 'linear';
 
 export type SearchHit = {
   id: string;
@@ -20,6 +28,7 @@ export function buildSearchIndex(params: {
     id: string;
     page: number;
     text: string;
+    originalText?: string;
     note: string;
     category: string;
     tags?: string[];
@@ -34,6 +43,11 @@ export function buildSearchIndex(params: {
     date: string;
     section: string;
   }>;
+  linearNotes?: Array<{
+    id: string;
+    text: string;
+    page?: number | null;
+  }>;
 }): SearchHit[] {
   const hits: SearchHit[] = [];
 
@@ -42,7 +56,7 @@ export function buildSearchIndex(params: {
       id: `hl-${h.id}`,
       kind: 'highlight',
       title: `Highlight · p.${h.page}`,
-      text: [h.text, h.note, ...(h.tags || [])].filter(Boolean).join(' — '),
+      text: [h.text, h.originalText, h.note, ...(h.tags || [])].filter(Boolean).join(' — '),
       page: h.page,
       highlightId: h.id,
       category: h.category,
@@ -57,7 +71,7 @@ export function buildSearchIndex(params: {
         id: `ex-${n.id}`,
         kind: 'excerpt',
         title: `Canvas excerpt · p.${d.page}`,
-        text: [d.text, d.note, ...(d.tags || [])].filter(Boolean).join(' — '),
+        text: [d.text, d.originalText, d.note, ...(d.tags || [])].filter(Boolean).join(' — '),
         page: d.page,
         highlightId: d.highlightId,
         nodeId: n.id,
@@ -117,6 +131,17 @@ export function buildSearchIndex(params: {
       text: [b.title, b.note, b.date].filter(Boolean).join(' — '),
       page: b.page,
       bookmarkId: b.id,
+    });
+  }
+
+  for (const n of params.linearNotes || []) {
+    if (!n.text?.trim()) continue;
+    hits.push({
+      id: `ln-${n.id}`,
+      kind: 'linear',
+      title: n.page != null ? `Linear note · p.${n.page}` : 'Linear note',
+      text: n.text,
+      page: n.page ?? null,
     });
   }
 

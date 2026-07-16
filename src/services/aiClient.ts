@@ -1,8 +1,11 @@
 /**
  * Unified AI client — Groq (preferred when configured) or Anthropic.
- * Keys: Settings → AI, or copy aiConfig.local.example.ts → aiConfig.local.ts
+ * Keys: Settings → AI, or fill aiConfig.local.ts (from aiConfig.local.example.ts).
  */
 import { getSetting, setSetting } from '../storage';
+// Static import — Metro cannot optional-require a missing file (resolves to
+// undefined and throws "Requiring unknown module \"undefined\"" at runtime).
+import { GROQ_API_KEY as LOCAL_GROQ_API_KEY } from './aiConfig.local';
 
 export type AiProvider = 'groq' | 'anthropic';
 
@@ -20,14 +23,7 @@ const ANTHROPIC_MODEL_SETTING = 'anthropic_model';
 const DEFAULT_GROQ_MODEL = 'llama-3.3-70b-versatile';
 const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6';
 
-let localGroqKey = '';
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const local = require('./aiConfig.local') as { GROQ_API_KEY?: string };
-  localGroqKey = local.GROQ_API_KEY?.trim() || '';
-} catch {
-  /* optional dev file */
-}
+const localGroqKey = (LOCAL_GROQ_API_KEY || '').trim();
 
 export async function getGroqKey(): Promise<string | null> {
   const stored = await getSetting(GROQ_KEY_SETTING);

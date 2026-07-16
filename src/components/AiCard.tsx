@@ -1,8 +1,9 @@
-import React, { useMemo, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, PanResponder } from 'react-native';
+import React from 'react';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { X, Link2 } from 'lucide-react-native';
 import { useStore, type FlowNode, type AiData } from '../store';
 import { getPalette, useTheme, SERIF, RADIUS, ELEVATION } from '../theme';
+import { useFreeformDrag } from '../hooks/useFreeformDrag';
 
 export const AI_CARD_WIDTH = 288;
 
@@ -18,48 +19,13 @@ function AiCard({
   onConnectTo: (id: string) => void;
 }) {
   const p = useTheme();
-  const moveNode = useStore((s) => s.moveNode);
-  const bringNodeToFront = useStore((s) => s.bringNodeToFront);
   const removeNode = useStore((s) => s.removeNode);
-  const setHoverNodeId = useStore((s) => s.setHoverNodeId);
-  const commitHistory = useStore((s) => s.commitHistory);
-  const assignNodeGroupByPosition = useStore((s) => s.assignNodeGroupByPosition);
   const data = node.data as AiData;
-  const origin = useRef({ x: node.x, y: node.y });
   const isSource = connectSource === node.id;
   const connecting = !!connectSource;
   const isFocused = useStore((s) => s.hoverNodeId === node.id);
   const width = node.w || AI_CARD_WIDTH;
-
-  const pan = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: (_e, g) =>
-          g.numberActiveTouches === 1 && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
-        onMoveShouldSetPanResponderCapture: (_e, g) =>
-          g.numberActiveTouches === 1 && (Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2),
-        onPanResponderTerminationRequest: () => false,
-        onPanResponderGrant: () => {
-          const n = useStore.getState().nodes.find((x) => x.id === node.id);
-          origin.current = { x: n?.x ?? node.x, y: n?.y ?? node.y };
-          commitHistory();
-          bringNodeToFront(node.id);
-          setHoverNodeId(node.id);
-        },
-        onPanResponderMove: (_e, g) => {
-          const s = Math.max(0.05, useStore.getState().canvasTf.s);
-          moveNode(node.id, origin.current.x + g.dx / s, origin.current.y + g.dy / s);
-        },
-        onPanResponderRelease: () => {
-          setHoverNodeId(null);
-          assignNodeGroupByPosition(node.id);
-        },
-        onPanResponderTerminate: () => setHoverNodeId(null),
-      }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [node.id, moveNode, bringNodeToFront, setHoverNodeId, commitHistory, assignNodeGroupByPosition],
-  );
+  const drag = useFreeformDrag({ nodeId: node.id });
 
   const s = styles(p);
 
@@ -67,11 +33,17 @@ function AiCard({
     <View
       style={[
         s.card,
-        { left: node.x, top: node.y, width, zIndex: node.z || 1 },
+        {
+          left: drag.x,
+          top: drag.y,
+          width,
+          zIndex: node.z || 1,
+          opacity: drag.dragging ? 0.92 : 1,
+        },
         isSource && s.cardSource,
         isFocused && s.cardFocus,
       ]}
-      {...pan.panHandlers}>
+      {...drag.panHandlers}>
       <View style={s.topRule} />
       <View style={s.inner}>
         <TouchableOpacity

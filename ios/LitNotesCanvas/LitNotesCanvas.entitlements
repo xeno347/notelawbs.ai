@@ -2,10 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Sign In with Apple requires a paid Apple Developer Program team.
-	     Re-enable when you're on a paid team:
-	     <key>com.apple.developer.applesignin</key>
-	     <array><string>Default</string></array>
+	<!--
+	  Sign In with Apple: enable the capability on App ID `ai.litnotes.canvas`
+	  in Apple Developer → Identifiers, then uncomment below and rebuild.
+
+	  <key>com.apple.developer.applesignin</key>
+	  <array>
+	    <string>Default</string>
+	  </array>
 	-->
 </dict>
 </plist>

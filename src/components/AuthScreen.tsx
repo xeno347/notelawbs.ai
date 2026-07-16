@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -14,7 +14,15 @@ import { Apple, Chrome } from 'lucide-react-native';
 import { useTheme, SERIF, RADIUS, ELEVATION } from '../theme';
 import { useAuth } from '../auth/authStore';
 import { isAppleSignInAvailable } from '../auth/cloudAuth';
-import { isSupabaseConfigured } from '../services/supabase';
+import {
+  isSupabaseConfigured,
+  getSupabaseOverrides,
+  saveSupabaseOverrides,
+  getGoogleClientOverrides,
+  saveGoogleClientOverrides,
+  googleClientIds,
+  loadSupabaseOverrides,
+} from '../services/supabase';
 import { AppButton, Field, Segmented, Aurora, BrandMark } from './ui';
 
 const VALUE_PROPS = [
@@ -45,6 +53,24 @@ export default function AuthScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
+  const [showCloudSetup, setShowCloudSetup] = useState(false);
+  const [sbUrl, setSbUrl] = useState('');
+  const [sbKey, setSbKey] = useState('');
+  const [googleWeb, setGoogleWeb] = useState('');
+  const [cloudSaving, setCloudSaving] = useState(false);
+  const [cloudReady, setCloudReady] = useState(cloud);
+
+  useEffect(() => {
+    void loadSupabaseOverrides().then(() => {
+      const ov = getSupabaseOverrides();
+      const g = getGoogleClientOverrides();
+      const ids = googleClientIds();
+      setSbUrl(ov.url);
+      setSbKey(ov.anonKey);
+      setGoogleWeb(g.web || ids.web);
+      setCloudReady(isSupabaseConfigured());
+    });
+  }, []);
 
   const shownError = localError || error;
 
@@ -52,6 +78,25 @@ export default function AuthScreen() {
     setMode(m);
     setLocalError(null);
     clearError();
+  };
+
+  const saveCloudSetup = async () => {
+    setCloudSaving(true);
+    setLocalError(null);
+    try {
+      await saveSupabaseOverrides(sbUrl, sbKey);
+      if (googleWeb.trim()) await saveGoogleClientOverrides(googleWeb, googleClientIds().ios);
+      await loadSupabaseOverrides();
+      const ok = isSupabaseConfigured();
+      setCloudReady(ok);
+      if (!ok) {
+        setLocalError('Enter a valid Supabase URL and anon key.');
+      } else {
+        setShowCloudSetup(false);
+      }
+    } finally {
+      setCloudSaving(false);
+    }
   };
 
   const onSubmit = async () => {
@@ -62,8 +107,8 @@ export default function AuthScreen() {
       setLocalError('Enter a valid email address.');
       return;
     }
-    if (password.length < 6) {
-      setLocalError('Password must be at least 6 characters.');
+    if (password.length < 8) {
+      setLocalError('Password must be at least 8 characters.');
       return;
     }
     if (mode === 'signup') await register(email, password, name);
@@ -100,7 +145,7 @@ export default function AuthScreen() {
         <Text style={[styles.cardTitle, { color: p.text }]}>
           {mode === 'signin' ? 'Welcome back' : 'Create your account'}
         </Text>
-        {cloud && (
+        {cloudReady && (
           <View style={[styles.cloudBadge, { backgroundColor: p.successSoft, borderColor: p.success }]}>
             <Text style={[styles.cloudBadgeText, { color: p.success }]}>Cloud</Text>
           </View>
@@ -109,7 +154,7 @@ export default function AuthScreen() {
       <Text style={[styles.cardSub, { color: p.textMuted }]}>
         {mode === 'signin'
           ? 'Sign in to open your workspace.'
-          : cloud
+          : cloudReady
           ? 'Set up your account to sync and share.'
           : 'Set up a local account to get started.'}
       </Text>
@@ -149,7 +194,7 @@ export default function AuthScreen() {
           label="Password"
           value={password}
           onChangeText={setPassword}
-          placeholder="At least 6 characters"
+          placeholder="At least 8 characters"
           secureTextEntry
           autoCapitalize="none"
         />
@@ -183,8 +228,9 @@ export default function AuthScreen() {
             onPress={() => {
               setLocalError(null);
               clearError();
-              if (!cloud) {
-                setLocalError('Connect Supabase in Settings to enable Apple sign-in.');
+              if (!cloudReady) {
+                setShowCloudSetup(true);
+                setLocalError('Connect Supabase below to enable Apple sign-in.');
                 return;
               }
               if (!appleAvailable) {
@@ -208,14 +254,57 @@ export default function AuthScreen() {
             onPress={() => {
               setLocalError(null);
               clearError();
-              if (cloud) loginWithGoogle();
-              else setLocalError('Connect Supabase in Settings to enable Google sign-in.');
+              if (!cloudReady) {
+                setShowCloudSetup(true);
+                setLocalError('Connect Supabase below to enable Google sign-in.');
+                return;
+              }
+              loginWithGoogle();
             }}
             leading={<Chrome size={17} color={p.text} />}
             full
           />
         </View>
       </View>
+
+      <Pressable onPress={() => setShowCloudSetup((v) => !v)} style={styles.switchRow}>
+        <Text style={[styles.switchText, { color: p.accent, fontWeight: '700' }]}>
+          {showCloudSetup ? 'Hide cloud setup' : 'Enable Google / Apple (cloud setup)'}
+        </Text>
+      </Pressable>
+
+      {showCloudSetup ? (
+        <View style={[styles.cloudSetup, { borderColor: p.border, backgroundColor: p.bg2 }]}>
+          <Text style={[styles.cloudSetupTitle, { color: p.text }]}>Cloud auth</Text>
+          <Text style={[styles.cloudSetupHint, { color: p.textMuted }]}>
+            Paste your Supabase project URL + anon key, and the Google Web Client ID. Then use Apple
+            or Google above.
+          </Text>
+          <Field
+            label="Supabase URL"
+            value={sbUrl}
+            onChangeText={setSbUrl}
+            placeholder="https://xxxx.supabase.co"
+            autoCapitalize="none"
+          />
+          <Field
+            label="Anon key"
+            value={sbKey}
+            onChangeText={setSbKey}
+            placeholder="eyJ…"
+            autoCapitalize="none"
+            secureTextEntry
+          />
+          <Field
+            label="Google Web Client ID"
+            value={googleWeb}
+            onChangeText={setGoogleWeb}
+            placeholder="….apps.googleusercontent.com"
+            autoCapitalize="none"
+          />
+          <AppButton label="Save & enable" onPress={saveCloudSetup} loading={cloudSaving} full />
+        </View>
+      ) : null}
 
       <Pressable onPress={() => switchMode(mode === 'signin' ? 'signup' : 'signin')} style={styles.switchRow}>
         <Text style={[styles.switchText, { color: p.textMuted }]}>
@@ -227,9 +316,9 @@ export default function AuthScreen() {
       </Pressable>
 
       <Text style={[styles.privacy, { color: p.textMuted }]}>
-        {cloud
+        {cloudReady
           ? 'Secured by Supabase. Your workspace syncs to your account.'
-          : 'Accounts and notes are stored only on this device.'}
+          : 'Email sign-up works offline on this device. Expand “Enable Google / Apple” to connect cloud auth.'}
       </Text>
     </View>
   );
@@ -312,4 +401,13 @@ const styles = StyleSheet.create({
   switchRow: { marginTop: 20, alignItems: 'center' },
   switchText: { fontSize: 13.5 },
   privacy: { fontSize: 11.5, textAlign: 'center', marginTop: 16 },
+  cloudSetup: {
+    marginTop: 14,
+    borderWidth: 1,
+    borderRadius: RADIUS.lg,
+    padding: 14,
+    gap: 12,
+  },
+  cloudSetupTitle: { fontSize: 15, fontWeight: '800' },
+  cloudSetupHint: { fontSize: 12.5, lineHeight: 18 },
 });

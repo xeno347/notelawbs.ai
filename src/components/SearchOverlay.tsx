@@ -12,7 +12,7 @@ const SCOPES: Array<{ key: Scope; label: string }> = [
   { key: 'page', label: 'This page' },
   { key: 'canvas', label: 'Notes & canvas' },
 ];
-const CANVAS_KINDS: SearchHitKind[] = ['excerpt', 'ai', 'note', 'group'];
+const CANVAS_KINDS: SearchHitKind[] = ['excerpt', 'ai', 'note', 'group', 'linear'];
 
 const KIND_LABEL: Record<SearchHitKind, string> = {
   highlight: 'Highlight',
@@ -22,6 +22,7 @@ const KIND_LABEL: Record<SearchHitKind, string> = {
   note: 'Note',
   group: 'Section',
   bookmark: 'Index',
+  linear: 'Linear note',
 };
 
 function Snippet({ text, term, style, matchStyle }: { text: string; term: string; style: any; matchStyle: any }) {
@@ -45,6 +46,7 @@ export default function SearchOverlay({ onClose }: { onClose: () => void }) {
   const nodes = useStore((s) => s.nodes);
   const ocrPages = useStore((s) => s.ocr.pages);
   const bookmarks = useStore((s) => s.bookmarks);
+  const linearNotes = useStore((s) => s.linearNotes);
   const currentPage = useStore((s) => s.currentPage);
   const jumpToHighlight = useStore((s) => s.jumpToHighlight);
   const jumpToPage = useStore((s) => s.jumpToPage);
@@ -52,10 +54,11 @@ export default function SearchOverlay({ onClose }: { onClose: () => void }) {
 
   const [query, setQuery] = useState('');
   const [scope, setScope] = useState<Scope>('all');
+  const [cursor, setCursor] = useState(0);
 
   const index = useMemo(
-    () => buildSearchIndex({ highlights, nodes, ocrPages, bookmarks }),
-    [highlights, nodes, ocrPages, bookmarks],
+    () => buildSearchIndex({ highlights, nodes, ocrPages, bookmarks, linearNotes }),
+    [highlights, nodes, ocrPages, bookmarks, linearNotes],
   );
   const scopedIndex = useMemo(() => {
     if (scope === 'page') return index.filter((h: SearchHit) => h.page === currentPage);
@@ -66,15 +69,39 @@ export default function SearchOverlay({ onClose }: { onClose: () => void }) {
   const firstTerm = query.trim().split(/\s+/)[0] || '';
   const scannedPages = Object.keys(ocrPages).length;
 
-  const onPressHit = (hit: SearchResult) => {
+  React.useEffect(() => {
+    setCursor(0);
+  }, [query, scope, results.length]);
+
+  const jumpHit = (hit: SearchResult) => {
     if (hit.highlightId) {
       jumpToHighlight(hit.highlightId);
-    } else if ((hit.kind === 'ocr' || hit.kind === 'bookmark') && hit.page) {
+      if (hit.nodeId) requestFocusNode(hit.nodeId);
+      else {
+        const linked = useStore
+          .getState()
+          .nodes.find(
+            (n) => n.type === 'excerpt' && (n.data as any).highlightId === hit.highlightId,
+          );
+        if (linked) requestFocusNode(linked.id);
+      }
+    } else if ((hit.kind === 'ocr' || hit.kind === 'bookmark' || hit.kind === 'linear') && hit.page) {
       jumpToPage(hit.page);
     } else if (hit.nodeId) {
       requestFocusNode(hit.nodeId);
     }
+  };
+
+  const onPressHit = (hit: SearchResult) => {
+    jumpHit(hit);
     onClose();
+  };
+
+  const goRelative = (delta: number) => {
+    if (!results.length) return;
+    const next = (cursor + delta + results.length) % results.length;
+    setCursor(next);
+    jumpHit(results[next]);
   };
 
   const s = styles(p);
@@ -129,28 +156,55 @@ export default function SearchOverlay({ onClose }: { onClose: () => void }) {
           ) : results.length === 0 ? (
             <Text style={s.hint}>No matches for "{query.trim()}".</Text>
           ) : (
-            <ScrollView style={s.list} keyboardShouldPersistTaps="handled">
-              {results.map((hit) => {
-                const cs = hit.category ? catStyle(hit.category) : null;
-                return (
-                  <TouchableOpacity key={hit.id} style={s.row} onPress={() => onPressHit(hit)}>
-                    <View style={[s.rowBar, { backgroundColor: cs ? cs.color : hit.kind === 'ai' ? p.ai : p.accent }]} />
-                    <View style={s.rowBody}>
-                      <View style={s.rowHeader}>
-                        <Text style={s.rowKind}>{KIND_LABEL[hit.kind].toUpperCase()}</Text>
-                        <Text style={s.rowTitle} numberOfLines={1}>{hit.title}</Text>
-                      </View>
-                      <Snippet
-                        text={hit.snippet}
-                        term={firstTerm}
-                        style={s.rowSnippet}
-                        matchStyle={s.rowMatch}
+            <>
+              <View style={s.findBar}>
+                <Text style={s.findCount}>
+                  {cursor + 1} of {results.length}
+                </Text>
+                <TouchableOpacity style={s.findBtn} onPress={() => goRelative(-1)}>
+                  <Text style={s.findBtnText}>Prev</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.findBtn} onPress={() => goRelative(1)}>
+                  <Text style={s.findBtnText}>Next</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={s.list} keyboardShouldPersistTaps="handled">
+                {results.map((hit, i) => {
+                  const cs = hit.category ? catStyle(hit.category) : null;
+                  const active = i === cursor;
+                  return (
+                    <TouchableOpacity
+                      key={hit.id}
+                      style={[s.row, active && { borderColor: p.tint, borderWidth: 1.5 }]}
+                      onPress={() => {
+                        setCursor(i);
+                        onPressHit(hit);
+                      }}>
+                      <View
+                        style={[
+                          s.rowBar,
+                          { backgroundColor: cs ? cs.color : hit.kind === 'ai' ? p.ai : p.accent },
+                        ]}
                       />
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
+                      <View style={s.rowBody}>
+                        <View style={s.rowHeader}>
+                          <Text style={s.rowKind}>{KIND_LABEL[hit.kind].toUpperCase()}</Text>
+                          <Text style={s.rowTitle} numberOfLines={1}>
+                            {hit.title}
+                          </Text>
+                        </View>
+                        <Snippet
+                          text={hit.snippet}
+                          term={firstTerm}
+                          style={s.rowSnippet}
+                          matchStyle={s.rowMatch}
+                        />
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </>
           )}
         </View>
       </View>
@@ -200,6 +254,22 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     scopeChipText: { fontSize: 12, color: p.textMid, fontWeight: '600' },
     scopeChipTextActive: { color: p.tint, fontWeight: '800' },
     hint: { color: p.textMuted, fontSize: 13, lineHeight: 20, textAlign: 'center', paddingVertical: 24, paddingHorizontal: 8 },
+    findBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      marginBottom: 10,
+    },
+    findCount: { flex: 1, fontSize: 13, fontWeight: '700', color: p.textMid },
+    findBtn: {
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      borderRadius: RADIUS.pill,
+      backgroundColor: p.tintSoft,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: p.tint,
+    },
+    findBtnText: { fontSize: 12, fontWeight: '800', color: p.tint },
     list: { maxHeight: 440 },
     row: {
       flexDirection: 'row',

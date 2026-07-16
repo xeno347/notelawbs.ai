@@ -17,10 +17,12 @@ import { CATEGORIES, CATEGORY_KEYS, getPalette, useTheme, SERIF, RADIUS, ELEVATI
 import type { CategoryKey } from '../theme';
 import type { MarkStyle } from '../store';
 import { useAnnotation } from '../annotationStore';
-import { translateToEnglish } from '../services/translateService';
+import { translatePassage } from '../services/translateService';
+import { detectScript } from '../services/translateService';
 
 export type PopoverSubmit = {
   text: string;
+  originalText?: string;
   category: CategoryKey;
   note: string;
   tags: string[];
@@ -50,18 +52,23 @@ export default function SelectionPopover({
   const defaultMark = useAnnotation((s) => s.markStyle);
   const [category, setCategory] = useState<CategoryKey>('key_fact');
   const [text, setText] = useState('');
+  const [originalText, setOriginalText] = useState<string | undefined>(undefined);
   const [note, setNote] = useState('');
   const [tagsRaw, setTagsRaw] = useState('');
   const [markStyle, setMarkStyle] = useState<MarkStyle>('highlight');
   const [translating, setTranslating] = useState(false);
+  const [scriptLabel, setScriptLabel] = useState('');
 
   useEffect(() => {
     if (visible) {
       setText(initialText);
+      setOriginalText(undefined);
       setNote('');
       setTagsRaw('');
       setCategory('key_fact');
       setMarkStyle(defaultMark || 'highlight');
+      const script = detectScript(initialText);
+      setScriptLabel(script === 'latin' || script === 'unknown' ? '' : script);
     }
   }, [visible, initialText, defaultMark]);
 
@@ -72,12 +79,14 @@ export default function SelectionPopover({
       .filter(Boolean);
     onSubmit({
       text: text.trim() || `Highlight on p. ${page}`,
+      originalText: originalText?.trim() || undefined,
       category,
       note: note.trim(),
       tags,
       markStyle,
     });
     setText('');
+    setOriginalText(undefined);
     setNote('');
     setTagsRaw('');
     setCategory('key_fact');
@@ -87,8 +96,13 @@ export default function SelectionPopover({
     if (!text.trim()) return;
     setTranslating(true);
     try {
-      const en = await translateToEnglish(text);
-      if (en) setText(en);
+      const result = await translatePassage(text);
+      if (!originalText) setOriginalText(result.original);
+      setText(result.english);
+      setScriptLabel(result.detected === 'latin' ? '' : result.detected);
+      if (!note.trim() && !result.alreadyEnglish) {
+        setNote(`Translated from ${result.detected}`);
+      }
     } catch (e: any) {
       Alert.alert('Translation failed', e?.message || 'Could not translate this passage.');
     } finally {
@@ -165,12 +179,21 @@ export default function SelectionPopover({
                 multiline
               />
             </View>
+            {!!originalText && originalText !== text && (
+              <Text style={{ color: p.textMuted, fontSize: 12, marginBottom: 8, fontStyle: 'italic' }}>
+                Original: {originalText}
+              </Text>
+            )}
 
             <TouchableOpacity style={s.translateBtn} onPress={onTranslate} disabled={translating || !text.trim()}>
               {translating ? (
                 <ActivityIndicator size="small" color={p.tint} />
               ) : (
-                <Text style={s.translateText}>Translate to English</Text>
+                <Text style={s.translateText}>
+                  {scriptLabel
+                    ? `Translate ${scriptLabel} → English`
+                    : 'Translate to English (Hindi / Punjabi / Marathi…)'}
+                </Text>
               )}
             </TouchableOpacity>
 

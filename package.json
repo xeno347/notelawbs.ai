@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@invertase/react-native-apple-authentication": "^2.5.1",
+    "@noble/hashes": "^1.7.1",
     "@react-native-async-storage/async-storage": "^2.1.0",
     "@react-native-community/blur": "^4.4.1",
     "@react-native-google-signin/google-signin": "^16.1.2",
@@ -19,6 +20,7 @@
     "@shopify/react-native-skia": "1.5.10",
     "@supabase/supabase-js": "^2.110.4",
     "lucide-react-native": "^0.469.0",
+    "pdf-lib": "^1.17.1",
     "react": "18.3.1",
     "react-native": "0.76.5",
     "react-native-blob-util": "^0.21.2",

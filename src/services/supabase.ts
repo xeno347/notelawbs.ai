@@ -11,9 +11,17 @@ import {
 
 const OVERRIDE_URL_KEY = 'litnotes.supabase.url';
 const OVERRIDE_ANON_KEY = 'litnotes.supabase.anon';
+const OVERRIDE_GOOGLE_WEB = 'litnotes.google.webClientId';
+const OVERRIDE_GOOGLE_IOS = 'litnotes.google.iosClientId';
+
+/** Matches the reversed iOS client ID already registered in Info.plist. */
+const PLIST_IOS_CLIENT_ID =
+  '576870734165-q31qv9o2mo9c12c25lt9lh9o3ktjcevj.apps.googleusercontent.com';
 
 let overrideUrl: string | null = null;
 let overrideKey: string | null = null;
+let overrideGoogleWeb: string | null = null;
+let overrideGoogleIos: string | null = null;
 let client: SupabaseClient | null = null;
 let cachedUrl = '';
 let cachedKey = '';
@@ -23,9 +31,13 @@ export async function loadSupabaseOverrides(): Promise<void> {
   try {
     overrideUrl = await AsyncStorage.getItem(OVERRIDE_URL_KEY);
     overrideKey = await AsyncStorage.getItem(OVERRIDE_ANON_KEY);
+    overrideGoogleWeb = await AsyncStorage.getItem(OVERRIDE_GOOGLE_WEB);
+    overrideGoogleIos = await AsyncStorage.getItem(OVERRIDE_GOOGLE_IOS);
   } catch {
     overrideUrl = null;
     overrideKey = null;
+    overrideGoogleWeb = null;
+    overrideGoogleIos = null;
   }
 }
 
@@ -40,11 +52,28 @@ export async function saveSupabaseOverrides(url: string, anonKey: string): Promi
   } catch {
     /* noop */
   }
-  client = null; // force re-create with the new credentials
+  client = null;
+}
+
+export async function saveGoogleClientOverrides(web: string, ios: string): Promise<void> {
+  overrideGoogleWeb = web.trim() || null;
+  overrideGoogleIos = ios.trim() || null;
+  try {
+    if (overrideGoogleWeb) await AsyncStorage.setItem(OVERRIDE_GOOGLE_WEB, overrideGoogleWeb);
+    else await AsyncStorage.removeItem(OVERRIDE_GOOGLE_WEB);
+    if (overrideGoogleIos) await AsyncStorage.setItem(OVERRIDE_GOOGLE_IOS, overrideGoogleIos);
+    else await AsyncStorage.removeItem(OVERRIDE_GOOGLE_IOS);
+  } catch {
+    /* noop */
+  }
 }
 
 export function getSupabaseOverrides(): { url: string; anonKey: string } {
   return { url: overrideUrl || '', anonKey: overrideKey || '' };
+}
+
+export function getGoogleClientOverrides(): { web: string; ios: string } {
+  return { web: overrideGoogleWeb || '', ios: overrideGoogleIos || '' };
 }
 
 function resolvedUrl(): string {
@@ -59,7 +88,14 @@ function resolvedKey(): string {
 
 /** True when a usable Supabase URL + anon key are present (env or runtime). */
 export function isSupabaseConfigured(): boolean {
-  return !isPlaceholder(resolvedUrl()) && !isPlaceholder(resolvedKey());
+  const url = resolvedUrl();
+  const key = resolvedKey();
+  return (
+    !isPlaceholder(url) &&
+    !isPlaceholder(key) &&
+    url.startsWith('http') &&
+    key.length > 40
+  );
 }
 
 /** Lazily build (and cache) the Supabase client. Returns null when unconfigured. */
@@ -84,12 +120,17 @@ export function getSupabase(): SupabaseClient | null {
 }
 
 export function googleClientIds(): { web: string; ios: string } {
-  return {
-    web: isPlaceholder(GOOGLE_WEB_CLIENT_ID) ? '' : GOOGLE_WEB_CLIENT_ID,
-    ios: isPlaceholder(GOOGLE_IOS_CLIENT_ID) ? '' : GOOGLE_IOS_CLIENT_ID,
-  };
+  const web =
+    (overrideGoogleWeb && !isPlaceholder(overrideGoogleWeb) && overrideGoogleWeb) ||
+    (!isPlaceholder(GOOGLE_WEB_CLIENT_ID) && GOOGLE_WEB_CLIENT_ID) ||
+    '';
+  const ios =
+    (overrideGoogleIos && !isPlaceholder(overrideGoogleIos) && overrideGoogleIos) ||
+    (!isPlaceholder(GOOGLE_IOS_CLIENT_ID) && GOOGLE_IOS_CLIENT_ID) ||
+    PLIST_IOS_CLIENT_ID;
+  return { web: web.trim(), ios: ios.trim() };
 }
 
 export function isGoogleConfigured(): boolean {
-  return !isPlaceholder(GOOGLE_WEB_CLIENT_ID);
+  return !!googleClientIds().web;
 }
