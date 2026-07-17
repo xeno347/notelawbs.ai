@@ -8,10 +8,9 @@ import {
   ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BlurView } from '@react-native-community/blur';
 import { X } from 'lucide-react-native';
 import { useStore, type Highlight } from '../store';
-import { CATEGORIES, catStyle, getPalette, useTheme, SERIF, RADIUS, ELEVATION } from '../theme';
+import { allCategories, catStyle, getPalette, useTheme, RADIUS, ELEVATION, TYPE } from '../theme';
 import type { CategoryKey } from '../theme';
 
 /**
@@ -23,6 +22,8 @@ export default function AnnotationsPanel({ onClose }: { onClose: () => void }) {
   const insets = useSafeAreaInsets();
   const highlights = useStore((s) => s.highlights);
   const jumpToHighlight = useStore((s) => s.jumpToHighlight);
+  const customCategories = useStore((s) => s.customCategories);
+  void customCategories;
   const [filter, setFilter] = useState<CategoryKey | 'all'>('all');
   const s = styles(p);
 
@@ -41,15 +42,7 @@ export default function AnnotationsPanel({ onClose }: { onClose: () => void }) {
     <Modal animationType="fade" transparent onRequestClose={onClose}>
       <View style={s.backdrop}>
         <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onClose} />
-        <View style={[s.panel, { marginTop: insets.top + 12, marginBottom: insets.bottom + 12 }]}>
-          <BlurView
-            style={StyleSheet.absoluteFill}
-            blurType={p.blurType}
-            blurAmount={26}
-            reducedTransparencyFallbackColor={p.bg}
-          />
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: p.glassTint }]} />
-
+        <View style={[s.panel, { marginTop: insets.top + 12, marginBottom: insets.bottom + 12, backgroundColor: p.sidebar }]}>
           <View style={s.header}>
             <Text style={s.title}>Annotations</Text>
             <TouchableOpacity onPress={onClose} hitSlop={10}>
@@ -63,18 +56,17 @@ export default function AnnotationsPanel({ onClose }: { onClose: () => void }) {
               onPress={() => setFilter('all')}>
               <Text style={[s.chipText, filter === 'all' && s.chipTextOn]}>All ({highlights.length})</Text>
             </TouchableOpacity>
-            {(Object.keys(CATEGORIES) as CategoryKey[]).map((key) => {
-              const cs = catStyle(key);
-              const count = highlights.filter((h) => h.category === key).length;
+            {allCategories().map((cat) => {
+              const count = highlights.filter((h) => h.category === cat.key).length;
               if (!count) return null;
               return (
                 <TouchableOpacity
-                  key={key}
-                  style={[s.chip, filter === key && { backgroundColor: cs.soft, borderColor: cs.color }]}
-                  onPress={() => setFilter(key)}>
-                  <View style={[s.dot, { backgroundColor: cs.color }]} />
-                  <Text style={[s.chipText, filter === key && { color: cs.color }]}>
-                    {cs.label} ({count})
+                  key={cat.key}
+                  style={[s.chip, filter === cat.key && { backgroundColor: cat.soft, borderColor: cat.color }]}
+                  onPress={() => setFilter(cat.key)}>
+                  <View style={[s.dot, { backgroundColor: cat.color }]} />
+                  <Text style={[s.chipText, filter === cat.key && { color: cat.color }]}>
+                    {cat.label} ({count})
                   </Text>
                 </TouchableOpacity>
               );
@@ -121,11 +113,11 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.28)', paddingHorizontal: 16 },
     panel: {
       flex: 1,
-      borderRadius: RADIUS.lg,
+      borderRadius: 0,
       overflow: 'hidden',
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: p.border,
-      ...ELEVATION.float,
+      borderLeftWidth: StyleSheet.hairlineWidth,
+      borderLeftColor: p.border,
+      ...ELEVATION.panel,
     },
     header: {
       flexDirection: 'row',
@@ -135,23 +127,23 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       paddingTop: 16,
       paddingBottom: 8,
     },
-    title: { fontSize: 20, fontWeight: '800', color: p.text, fontFamily: SERIF },
+    title: { ...TYPE.title3, color: p.text },
     filters: { maxHeight: 44, marginBottom: 4 },
-    filtersRow: { paddingHorizontal: 12, gap: 8, alignItems: 'center' },
+    filtersRow: { paddingHorizontal: 12, gap: 6, alignItems: 'center' },
     chip: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 6,
-      paddingHorizontal: 12,
-      paddingVertical: 7,
-      borderRadius: RADIUS.pill,
-      backgroundColor: p.fillSecondary,
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: RADIUS.md,
+      backgroundColor: 'transparent',
       borderWidth: StyleSheet.hairlineWidth,
-      borderColor: p.border,
+      borderColor: 'transparent',
     },
-    chipOn: { backgroundColor: p.tintSoft, borderColor: p.tint },
-    chipText: { fontSize: 12, fontWeight: '700', color: p.textMid },
-    chipTextOn: { color: p.tint },
+    chipOn: { backgroundColor: p.hover, borderColor: p.border },
+    chipText: { fontSize: 12, fontWeight: '500', color: p.textMid },
+    chipTextOn: { color: p.text },
     dot: { width: 8, height: 8, borderRadius: 4 },
     list: { flex: 1, paddingHorizontal: 12 },
     empty: { color: p.textMuted, fontSize: 13, lineHeight: 18, padding: 16 },
@@ -168,6 +160,6 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     swatch: { width: 4, borderRadius: 2 },
     rowBody: { flex: 1, gap: 3 },
     meta: { fontSize: 11, fontWeight: '700', color: p.textMuted, letterSpacing: 0.3 },
-    snippet: { fontSize: 14, lineHeight: 19, color: p.text, fontFamily: SERIF },
+    snippet: { fontSize: 14, lineHeight: 20, color: p.text },
     note: { fontSize: 12, color: p.textMid, fontStyle: 'italic' },
   });

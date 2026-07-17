@@ -6,15 +6,17 @@ import {
   Pressable,
   ActivityIndicator,
   StyleSheet,
-  Platform,
+  Image,
   type TextInputProps,
   type ViewStyle,
+  type ImageStyle,
 } from 'react-native';
-import { BlurView } from '@react-native-community/blur';
-import Svg, { Defs, RadialGradient, LinearGradient, Stop, Rect, Circle } from 'react-native-svg';
-import { useTheme, useScheme, RADIUS, TYPE, SANS, glow, ELEVATION, type Palette } from '../theme';
+import Svg, { Defs, LinearGradient, Stop, Rect } from 'react-native-svg';
+import { useTheme, RADIUS, TYPE, SANS, type Palette } from '../theme';
 
-/** Liquid Glass material — iOS chromeMaterial light/dark. */
+const LOGO = require('../assets/notelawbs-logo.png');
+
+/** Flat surface — Notion chrome has no blur/glass. Kept for call-site compat. */
 export function GlassView({
   children,
   style,
@@ -25,23 +27,14 @@ export function GlassView({
   fallback?: string;
 }) {
   const p = useTheme();
-  const scheme = useScheme();
-  const blurType = scheme === 'dark' ? 'chromeMaterialDark' : 'chromeMaterialLight';
   return (
-    <View style={[styles.glassWrap, style]}>
-      <BlurView
-        style={StyleSheet.absoluteFill}
-        blurType={blurType as any}
-        blurAmount={Platform.OS === 'ios' ? 28 : 18}
-        reducedTransparencyFallbackColor={fallback || p.surfaceGlass}
-      />
-      <View style={[StyleSheet.absoluteFill, { backgroundColor: p.glassTint }]} pointerEvents="none" />
+    <View style={[{ backgroundColor: fallback || p.surface, overflow: 'hidden' }, style]}>
       {children}
     </View>
   );
 }
 
-/** iOS Settings-style grouped inset section. */
+/** Settings-style grouped section — flat, hairline borders. */
 export function GroupedSection({
   title,
   footer,
@@ -62,7 +55,7 @@ export function GroupedSection({
       <View
         style={[
           styles.groupBox,
-          { backgroundColor: p.grouped },
+          { backgroundColor: p.grouped, borderColor: p.border },
         ]}>
         {children}
       </View>
@@ -88,7 +81,9 @@ export function GroupedRow({
   );
   if (onPress) {
     return (
-      <Pressable onPress={onPress} style={({ pressed }) => [{ opacity: pressed ? 0.72 : 1 }]}>
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => [{ backgroundColor: pressed ? p.hover : 'transparent' }]}>
         {inner}
       </Pressable>
     );
@@ -96,11 +91,11 @@ export function GroupedRow({
   return inner;
 }
 
-/* Vertical (or angled) linear gradient fill for premium surfaces. */
+/* Kept for call sites that still pass gradient fills (now a flat fill of `from`). */
 export function SoftGradient({
   from,
-  to,
-  angle = 'vertical',
+  to: _to,
+  angle: _angle = 'vertical',
   radius = 0,
   style,
 }: {
@@ -110,16 +105,14 @@ export function SoftGradient({
   radius?: number;
   style?: ViewStyle;
 }) {
-  const x2 = angle === 'diagonal' ? '1' : '0';
-  // Unique id per instance — duplicate gradient ids spam RN SVG console errors.
   const gid = `sg-${useId().replace(/:/g, '')}`;
   return (
     <View style={[StyleSheet.absoluteFill, { borderRadius: radius, overflow: 'hidden' }, style]} pointerEvents="none">
       <Svg style={StyleSheet.absoluteFill}>
         <Defs>
-          <LinearGradient id={gid} x1="0" y1="0" x2={x2} y2="1">
+          <LinearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
             <Stop offset="0" stopColor={from} />
-            <Stop offset="1" stopColor={to} />
+            <Stop offset="1" stopColor={from} />
           </LinearGradient>
         </Defs>
         <Rect x="0" y="0" width="100%" height="100%" fill={`url(#${gid})`} />
@@ -128,7 +121,7 @@ export function SoftGradient({
   );
 }
 
-/* Primary / secondary / ghost action button with press feedback. */
+/* Primary = solid dark; secondary/ghost = transparent until hover. */
 export function AppButton({
   label,
   onPress,
@@ -149,12 +142,10 @@ export function AppButton({
   tone?: string;
 }) {
   const p = useTheme();
-  const accent = tone || p.tint;
   const isPrimary = variant === 'primary';
   const isGhost = variant === 'ghost';
-  const bg = isPrimary ? accent : isGhost ? 'transparent' : p.fill;
-  const border = isPrimary ? accent : isGhost ? 'transparent' : 'transparent';
-  const color = isPrimary ? '#fff' : isGhost ? p.tint : p.text;
+  const bg = isPrimary ? tone || p.text : 'transparent';
+  const color = isPrimary ? '#FFFFFF' : isGhost ? p.textMid : p.text;
   const blocked = disabled || loading;
 
   return (
@@ -166,12 +157,15 @@ export function AppButton({
         styles.btn,
         full && { alignSelf: 'stretch' },
         {
-          backgroundColor: bg,
-          borderColor: border,
-          opacity: blocked ? 0.55 : 1,
-          transform: [{ scale: pressed && !blocked ? 0.98 : 1 }],
+          backgroundColor: isPrimary
+            ? bg
+            : pressed
+              ? p.hover
+              : 'transparent',
+          borderColor: isPrimary ? 'transparent' : pressed && !isGhost ? p.border : 'transparent',
+          borderWidth: StyleSheet.hairlineWidth,
+          opacity: blocked ? 0.5 : 1,
         },
-        isPrimary && glow(tone ? tone : p.tintSoft, 0.45),
       ]}>
       {loading ? (
         <ActivityIndicator color={color} size="small" />
@@ -185,7 +179,7 @@ export function AppButton({
   );
 }
 
-/* Labeled text field with focus glow. */
+/* Flat input — focus = accent border, no glow ring. */
 export function Field({
   label,
   value,
@@ -218,10 +212,9 @@ export function Field({
         style={[
           styles.fieldWrap,
           {
-            backgroundColor: p.grouped,
-            borderColor: focused ? p.tint : p.separator,
+            backgroundColor: p.surface,
+            borderColor: focused ? p.tint : p.border,
           },
-          focused && glow(p.tintSoft, 0.35),
         ]}>
         <TextInput
           value={value}
@@ -243,7 +236,7 @@ export function Field({
   );
 }
 
-/* Pill-track segmented control. */
+/* Flat segmented control. */
 export function Segmented<T extends string>({
   options,
   value,
@@ -266,7 +259,7 @@ export function Segmented<T extends string>({
             onPress={() => onChange(o.key)}
             style={[
               styles.segItem,
-              active && { backgroundColor: p.grouped, ...ELEVATION.card },
+              active && { backgroundColor: p.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: p.border },
             ]}>
             <Text
               style={{
@@ -284,86 +277,74 @@ export function Segmented<T extends string>({
   );
 }
 
-/* Soft multi-color aurora glow behind splash / auth / empty states. */
+/** Soft wash — barely-there fill for empty states (no multi-color aurora). */
 export function Aurora({ palette }: { palette?: Palette }) {
   const themePalette = useTheme();
   const p = palette ?? themePalette;
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="none">
-      <Svg style={StyleSheet.absoluteFill}>
-        <Defs>
-          <RadialGradient id="a1" cx="20%" cy="18%" r="55%">
-            <Stop offset="0" stopColor={p.accent} stopOpacity={0.16} />
-            <Stop offset="1" stopColor={p.accent} stopOpacity={0} />
-          </RadialGradient>
-          <RadialGradient id="a2" cx="85%" cy="30%" r="55%">
-            <Stop offset="0" stopColor={p.ai} stopOpacity={0.14} />
-            <Stop offset="1" stopColor={p.ai} stopOpacity={0} />
-          </RadialGradient>
-          <RadialGradient id="a3" cx="60%" cy="95%" r="60%">
-            <Stop offset="0" stopColor={p.iris} stopOpacity={0.12} />
-            <Stop offset="1" stopColor={p.iris} stopOpacity={0} />
-          </RadialGradient>
-        </Defs>
-        <Rect x="0" y="0" width="100%" height="100%" fill="url(#a1)" />
-        <Rect x="0" y="0" width="100%" height="100%" fill="url(#a2)" />
-        <Rect x="0" y="0" width="100%" height="100%" fill="url(#a3)" />
-      </Svg>
-    </View>
+    <View style={[StyleSheet.absoluteFill, { backgroundColor: p.bg2 }]} pointerEvents="none" />
   );
 }
 
-/* Small brand mark — a stacked "spine" + dot, echoing the canvas identity. */
-export function BrandMark({ size = 40, color }: { size?: number; color?: string }) {
-  const p = useTheme();
-  const c = color || p.accent;
+/** NoteLawbs.Ai logo mark from brand asset. */
+export function BrandMark({
+  size = 40,
+  color: _color,
+  style,
+}: {
+  size?: number;
+  color?: string;
+  style?: ImageStyle;
+}) {
   return (
-    <Svg width={size} height={size} viewBox="0 0 40 40">
-      <Circle cx="20" cy="20" r="18" fill="none" stroke={c} strokeWidth={1.4} opacity={0.35} />
-      <Rect x="15" y="9" width="4" height="22" rx="2" fill={c} />
-      <Rect x="22" y="14" width="4" height="17" rx="2" fill={p.ai} />
-      <Circle cx="17" cy="31" r="2.4" fill={c} />
-    </Svg>
+    <Image
+      source={LOGO}
+      style={[{ width: size, height: size }, style]}
+      resizeMode="contain"
+      accessibilityLabel="NoteLawbs.Ai"
+    />
   );
 }
 
 const styles = StyleSheet.create({
-  glassWrap: { overflow: 'hidden' },
-  groupTitle: { ...TYPE.caption2, fontWeight: '400', marginBottom: 7, marginLeft: 16, letterSpacing: -0.08 },
-  groupBox: { borderRadius: RADIUS.sm, overflow: 'hidden', ...ELEVATION.card },
-  groupFooter: { ...TYPE.caption2, marginTop: 7, marginHorizontal: 16, lineHeight: 16 },
-  groupRow: { minHeight: 44, paddingHorizontal: 16, paddingVertical: 11, flexDirection: 'row', alignItems: 'center' },
+  groupTitle: { ...TYPE.caption2, fontWeight: '500', marginBottom: 7, marginLeft: 12, letterSpacing: 0.4 },
+  groupBox: {
+    borderRadius: RADIUS.lg,
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  groupFooter: { ...TYPE.caption2, marginTop: 7, marginHorizontal: 12, lineHeight: 16 },
+  groupRow: { minHeight: 44, paddingHorizontal: 14, paddingVertical: 10, flexDirection: 'row', alignItems: 'center' },
   btn: {
-    minHeight: 50,
-    paddingHorizontal: 20,
+    minHeight: 36,
+    paddingHorizontal: 14,
     borderRadius: RADIUS.md,
-    borderWidth: 0,
     alignItems: 'center',
     justifyContent: 'center',
   },
   btnInner: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  btnText: { fontSize: 17, fontWeight: '600', fontFamily: SANS },
-  fieldLabel: { fontSize: 13, fontWeight: '400', fontFamily: SANS },
+  btnText: { fontSize: 14, fontWeight: '500', fontFamily: SANS },
+  fieldLabel: { fontSize: 12, fontWeight: '500', fontFamily: SANS },
   fieldWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 44,
-    borderRadius: RADIUS.sm,
+    minHeight: 36,
+    borderRadius: RADIUS.md,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
   },
-  fieldInput: { flex: 1, fontSize: 17, paddingVertical: 10, fontFamily: SANS },
+  fieldInput: { flex: 1, fontSize: 16, paddingVertical: 8, fontFamily: SANS },
   segTrack: {
     flexDirection: 'row',
     padding: 2,
-    borderRadius: RADIUS.sm,
+    borderRadius: RADIUS.md,
     gap: 2,
   },
   segItem: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 7,
-    borderRadius: 8,
+    paddingVertical: 6,
+    borderRadius: RADIUS.sm,
   },
 });

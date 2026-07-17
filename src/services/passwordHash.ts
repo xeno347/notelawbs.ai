@@ -1,17 +1,18 @@
 import { pbkdf2, pbkdf2Async } from '@noble/hashes/pbkdf2';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils';
+import { randomBytes } from './secureRandom';
 
 /**
  * Local-account password hashing (PBKDF2-SHA256).
  * Format: `pbkdf2$iterations$saltHex$hashHex`
  *
  * Uses async PBKDF2 so sign-up / sign-in never freeze the UI on device.
- * Legacy djb2 hashes are still verified and upgraded on successful login.
+ * Legacy djb2 / lower-iteration hashes are verified and upgraded on login.
  */
 
-/** New accounts — strong enough for on-device storage, fast on older iPads. */
-const ITERATIONS = 30_000;
+/** OWASP 2023 recommendation for PBKDF2-SHA256. */
+export const ITERATIONS = 600_000;
 const SALT_BYTES = 16;
 const KEY_BYTES = 32;
 const PREFIX = 'pbkdf2';
@@ -19,17 +20,7 @@ const PREFIX = 'pbkdf2';
 const ASYNC_TICK = 8;
 
 function randomSalt(): Uint8Array {
-  const out = new Uint8Array(SALT_BYTES);
-  for (let i = 0; i < SALT_BYTES; i++) {
-    out[i] = Math.floor(Math.random() * 256);
-  }
-  try {
-    const g = globalThis as { crypto?: { getRandomValues?: (a: Uint8Array) => Uint8Array } };
-    if (g.crypto?.getRandomValues) g.crypto.getRandomValues(out);
-  } catch {
-    /* keep Math.random fallback */
-  }
-  return out;
+  return randomBytes(SALT_BYTES);
 }
 
 function pbkdf2Opts(iterations: number) {

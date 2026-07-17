@@ -1,18 +1,30 @@
 import React, { useMemo, useRef } from 'react';
-import { View, TextInput, TouchableOpacity, StyleSheet, PanResponder } from 'react-native';
-import { X, GripHorizontal } from 'lucide-react-native';
-import { useStore, type FlowNode, type GroupData } from '../store';
-import { getPalette, useTheme, RADIUS, ELEVATION } from '../theme';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  PanResponder,
+  Alert,
+  Share,
+} from 'react-native';
+import { X, GripHorizontal, ChevronDown, ChevronRight, Download } from 'lucide-react-native';
+import { useStore, type FlowNode, type GroupData, type ExcerptData, type NoteData, type AiData } from '../store';
+import { getPalette, useTheme, RADIUS, ELEVATION, HIGHLIGHTS } from '../theme';
 
 export const GROUP_CARD_WIDTH = 280;
 export const GROUP_CARD_HEIGHT = 180;
 
-/**
- * A real container: dragging the title bar moves every card whose `groupId`
- * points at this node along with it. Membership itself is assigned by each
- * card on drop (see assignNodeGroupByPosition) — this component only owns
- * the box and the "carry my children" behaviour.
- */
+const GROUP_COLORS = [
+  HIGHLIGHTS.yellow,
+  HIGHLIGHTS.red,
+  HIGHLIGHTS.blue,
+  HIGHLIGHTS.green,
+  HIGHLIGHTS.purple,
+  '#F1F1EF',
+];
+
 function GroupCard({ node }: { node: FlowNode }) {
   const p = useTheme();
   const moveNode = useStore((s) => s.moveNode);
@@ -20,14 +32,18 @@ function GroupCard({ node }: { node: FlowNode }) {
   const bringNodeToFront = useStore((s) => s.bringNodeToFront);
   const removeNode = useStore((s) => s.removeNode);
   const updateNodeData = useStore((s) => s.updateNodeData);
+  const toggleGroupCollapsed = useStore((s) => s.toggleGroupCollapsed);
   const setHoverNodeId = useStore((s) => s.setHoverNodeId);
   const commitHistory = useStore((s) => s.commitHistory);
+  const selected = useStore((s) => s.selectedNodeIds.includes(node.id));
+  const toggleNodeSelected = useStore((s) => s.toggleNodeSelected);
   const data = node.data as GroupData;
   const origin = useRef({ x: node.x, y: node.y });
   const childrenStart = useRef<Array<{ id: string; x: number; y: number }>>([]);
   const startSize = useRef({ w: node.w || GROUP_CARD_WIDTH, h: node.h || GROUP_CARD_HEIGHT });
   const width = node.w || GROUP_CARD_WIDTH;
-  const height = node.h || GROUP_CARD_HEIGHT;
+  const height = data.collapsed ? 44 : node.h || GROUP_CARD_HEIGHT;
+  const accent = data.color || p.border;
 
   const pan = useMemo(
     () =>
@@ -45,6 +61,9 @@ function GroupCard({ node }: { node: FlowNode }) {
           commitHistory();
           bringNodeToFront(node.id);
           setHoverNodeId(node.id);
+          if (!useStore.getState().selectedNodeIds.includes(node.id)) {
+            useStore.getState().setSelectedNodeIds([node.id]);
+          }
         },
         onPanResponderMove: (_e, g) => {
           const s = Math.max(0.05, useStore.getState().canvasTf.s);
@@ -85,14 +104,85 @@ function GroupCard({ node }: { node: FlowNode }) {
     [node.id, resizeNode, bringNodeToFront, setHoverNodeId, commitHistory],
   );
 
+  const pickColor = () => {
+    Alert.alert(
+      'Section color',
+      undefined,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        ...GROUP_COLORS.map((c, i) => ({
+          text: ['Yellow', 'Red', 'Blue', 'Green', 'Purple', 'Gray'][i],
+          onPress: () => updateNodeData(node.id, { color: c }),
+        })),
+      ],
+    );
+  };
+
+  const exportGroup = async () => {
+    const state = useStore.getState();
+    const members = state.nodes.filter((n) => n.groupId === node.id || n.id === node.id);
+    const lines: string[] = [`# ${data.title || 'Untitled section'}`, ''];
+    for (const n of members.sort((a, b) => a.y - b.y || a.x - b.x)) {
+      if (n.type === 'group') continue;
+      if (n.type === 'note') {
+        const d = n.data as NoteData;
+        if (d.text?.trim()) lines.push(`- **Note:** ${d.text.trim()}`, '');
+      } else if (n.type === 'excerpt') {
+        const d = n.data as ExcerptData;
+        lines.push(`- "${d.text}" (p.${d.page})`);
+        if (d.note) lines.push(`  _${d.note}_`);
+        lines.push('');
+      } else if (n.type === 'ai') {
+        const d = n.data as AiData;
+        lines.push(`## ${d.heading}`, '', d.body, '');
+      }
+    }
+    try {
+      await Share.share({ message: lines.join('\n'), title: data.title || 'Section' });
+    } catch {
+      /* ignore */
+    }
+  };
+
   const s = styles(p);
 
   return (
-    <View style={[s.card, { left: node.x, top: node.y, width, height, zIndex: node.z || 1 }]}>
-      <View style={s.body} pointerEvents="none" />
-      <View style={s.titleBar}>
+    <View
+      style={[
+        s.card,
+        {
+          left: node.x,
+          top: node.y,
+          width,
+          height,
+          zIndex: node.z || 1,
+        },
+      ]}>
+      <View
+        style={[
+          s.body,
+          {
+            backgroundColor: data.color || p.fill,
+            borderColor: selected ? p.tint : accent,
+            opacity: data.collapsed ? 0 : 0.55,
+          },
+        ]}
+        pointerEvents="none"
+      />
+      <View style={[s.titleBar, { borderLeftColor: selected ? p.tint : accent }]}>
+        <TouchableOpacity
+          onPress={() => toggleGroupCollapsed(node.id)}
+          hitSlop={8}
+          style={s.chevron}
+          accessibilityLabel={data.collapsed ? 'Expand section' : 'Collapse section'}>
+          {data.collapsed ? (
+            <ChevronRight size={16} color={p.textMuted} strokeWidth={1.5} />
+          ) : (
+            <ChevronDown size={16} color={p.textMuted} strokeWidth={1.5} />
+          )}
+        </TouchableOpacity>
         <View style={s.dragGrip} {...pan.panHandlers} accessibilityLabel="Move section">
-          <GripHorizontal size={16} color={p.textMuted} strokeWidth={2.2} />
+          <GripHorizontal size={16} color={p.textMuted} strokeWidth={1.5} />
         </View>
         <TextInput
           value={data.title}
@@ -100,14 +190,23 @@ function GroupCard({ node }: { node: FlowNode }) {
           placeholder="Section title"
           placeholderTextColor={p.textMuted}
           style={s.input}
+          onFocus={() => toggleNodeSelected(node.id, false)}
         />
+        <TouchableOpacity onPress={pickColor} hitSlop={8} style={s.toolBtn}>
+          <View style={[s.colorDot, { backgroundColor: accent }]} />
+        </TouchableOpacity>
+        <TouchableOpacity onPress={exportGroup} hitSlop={8} style={s.toolBtn}>
+          <Download size={14} color={p.textMuted} strokeWidth={1.5} />
+        </TouchableOpacity>
         <TouchableOpacity style={s.del} onPress={() => removeNode(node.id)} hitSlop={8}>
-          <X size={14} color={p.textMuted} strokeWidth={2.2} />
+          <X size={14} color={p.textMuted} strokeWidth={1.5} />
         </TouchableOpacity>
       </View>
-      <View style={s.resizeHit} {...resizePan.panHandlers}>
-        <View style={[s.resizeGrip, { borderColor: p.iris }]} />
-      </View>
+      {!data.collapsed ? (
+        <View style={s.resizeHit} {...resizePan.panHandlers}>
+          <View style={[s.resizeGrip, { borderColor: p.textMuted }]} />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -119,44 +218,43 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     card: { position: 'absolute' },
     body: {
       ...StyleSheet.absoluteFillObject,
-      backgroundColor: p.surface,
-      opacity: 0.32,
-      borderRadius: RADIUS.md,
-      borderWidth: 1.5,
-      borderColor: p.iris,
+      borderRadius: RADIUS.lg,
+      borderWidth: StyleSheet.hairlineWidth,
       borderStyle: 'dashed',
     },
     titleBar: {
       flexDirection: 'row',
       alignItems: 'center',
-      alignSelf: 'flex-start',
+      alignSelf: 'stretch',
       maxWidth: '100%',
       backgroundColor: p.surface,
-      borderRadius: RADIUS.sm,
-      borderLeftWidth: 5,
-      borderLeftColor: p.iris,
-      borderWidth: 1,
+      borderRadius: RADIUS.md,
+      borderLeftWidth: 3,
+      borderWidth: StyleSheet.hairlineWidth,
       borderColor: p.border,
-      paddingVertical: 8,
-      paddingLeft: 6,
-      paddingRight: 28,
-      gap: 6,
-      ...ELEVATION.float,
+      paddingVertical: 4,
+      paddingLeft: 2,
+      paddingRight: 8,
+      gap: 2,
+      ...ELEVATION.card,
     },
+    chevron: { width: 28, height: 32, alignItems: 'center', justifyContent: 'center' },
     dragGrip: {
       width: 28,
       height: 32,
       alignItems: 'center',
       justifyContent: 'center',
     },
-    del: { position: 'absolute', top: 8, right: 8 },
+    toolBtn: { padding: 4 },
+    colorDot: { width: 12, height: 12, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, borderColor: p.border },
+    del: { padding: 4 },
     input: {
-      fontSize: 16,
-      fontWeight: '800',
+      fontSize: 14,
+      fontWeight: '600',
       color: p.text,
       padding: 0,
-      minWidth: 120,
-      flexShrink: 1,
+      minWidth: 80,
+      flex: 1,
     },
     resizeHit: {
       position: 'absolute',
@@ -171,8 +269,8 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     resizeGrip: {
       width: 12,
       height: 12,
-      borderRightWidth: 2.5,
-      borderBottomWidth: 2.5,
+      borderRightWidth: 1.5,
+      borderBottomWidth: 1.5,
       borderBottomRightRadius: 2,
     },
   });

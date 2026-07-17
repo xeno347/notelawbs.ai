@@ -1,5 +1,6 @@
 import React, { Component, type ErrorInfo, type ReactNode } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { reportReactError } from '../services/errorReporting';
 
 type Props = { children: ReactNode; fallbackTitle?: string };
 type State = { error: Error | null };
@@ -12,8 +13,8 @@ export default class ErrorBoundary extends Component<Props, State> {
     return { error };
   }
 
-  componentDidCatch(_error: Error, _info: ErrorInfo) {
-    /* surfaced in UI */
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    reportReactError(error, info);
   }
 
   render() {

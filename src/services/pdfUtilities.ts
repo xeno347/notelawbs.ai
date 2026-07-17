@@ -56,7 +56,7 @@ export async function compressPdfCopy(
   const before = src.byteLength;
   const pdf = await PDFDocument.load(src, { ignoreEncryption: true, updateMetadata: false });
   pdf.setTitle(`${docName || 'document'} (compressed)`);
-  pdf.setProducer('LitNotes Canvas');
+  pdf.setProducer('NoteLawbs.Ai');
   const out = await pdf.save({ useObjectStreams: true, addDefaultPage: false });
   const after = out.byteLength;
   const dest = `${ReactNativeBlobUtil.fs.dirs.CacheDir}/${safeName(docName)}-compressed.pdf`;

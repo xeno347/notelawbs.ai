@@ -1,11 +1,15 @@
-import { Platform } from 'react-native';
+import { Linking, Platform } from 'react-native';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import { appleAuth } from '@invertase/react-native-apple-authentication';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { getSupabase, googleClientIds, isGoogleConfigured } from '../services/supabase';
+import { randomBytes } from '../services/secureRandom';
 import type { AuthUser } from '../storage';
 
 export type CloudResult = { ok: true; user: AuthUser } | { ok: false; error: string };
+
+/** Must be listed under Supabase → Authentication → URL Configuration → Redirect URLs. */
+const GOOGLE_OAUTH_REDIRECT = 'litnotes://auth/callback';
 
 function displayNameFor(u: SupabaseUser): string {
   const meta = (u.user_metadata || {}) as Record<string, any>;
@@ -60,7 +64,36 @@ function friendlyAuthError(message: string): string {
   if (m.includes('email not confirmed')) {
     return 'Confirm your email first (or turn off “Confirm email” in Supabase Auth settings).';
   }
+  if (m.includes('nonce')) {
+    return 'Google nonce mismatch. Add litnotes://auth/callback to Supabase Redirect URLs, or enable “Skip nonce check” under Authentication → Providers → Google.';
+  }
   return message || 'Something went wrong. Try again.';
+}
+
+function parseAuthCallbackUrl(url: string): {
+  code?: string;
+  access_token?: string;
+  refresh_token?: string;
+} {
+  try {
+    const normalized = url.replace(/^litnotes:/i, 'https://litnotes.local');
+    const u = new URL(normalized);
+    const hash = u.hash.startsWith('#') ? u.hash.slice(1) : u.hash;
+    const hashParams = new URLSearchParams(hash);
+    return {
+      code: u.searchParams.get('code') || undefined,
+      access_token:
+        hashParams.get('access_token') || u.searchParams.get('access_token') || undefined,
+      refresh_token:
+        hashParams.get('refresh_token') || u.searchParams.get('refresh_token') || undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function isGoogleAuthCallback(url: string): boolean {
+  return /^litnotes:\/\/auth\/callback/i.test(url);
 }
 
 export async function cloudSignInWithEmail(email: string, password: string): Promise<CloudResult> {
@@ -136,6 +169,13 @@ function ensureGoogleConfigured() {
   googleConfiguredKey = key;
 }
 
+/**
+ * Google via Supabase OAuth + deep link.
+ *
+ * Native GoogleSignIn id_token flow fails on iOS with
+ * "Passed nonce and nonce in id_token should either both exist or not"
+ * because the free Google SDK embeds a nonce we cannot forward to Supabase.
+ */
 export async function cloudSignInWithGoogle(): Promise<CloudResult> {
   const sb = getSupabase();
   if (!sb) {
@@ -148,52 +188,107 @@ export async function cloudSignInWithGoogle(): Promise<CloudResult> {
     return {
       ok: false,
       error:
-        'Add a Google Web Client ID in Settings → Advanced → Google sign-in (or supabaseConfig.local.ts), then try again.',
+        'Add a Google Web Client ID in supabaseConfig.local.ts, then try again.',
     };
   }
+
+  // Keep native SDK configured for sign-out / Android fallbacks.
+  ensureGoogleConfigured();
+
   try {
-    ensureGoogleConfigured();
-    // Play Services is Android-only — calling it on iOS can hang or throw.
-    if (Platform.OS === 'android') {
-      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
-    }
-    const result = await GoogleSignin.signIn();
-    if ((result as any)?.type === 'cancelled' || (result as any)?.data == null && !(result as any)?.idToken) {
-      // Newer API returns { type, data }; older returns user info directly.
-      if ((result as any)?.type === 'cancelled') {
-        return { ok: false, error: 'Google sign-in was cancelled.' };
-      }
-    }
-    let idToken: string | null | undefined =
-      (result as any)?.data?.idToken || (result as any)?.idToken;
-    if (!idToken) {
-      const tokens = await GoogleSignin.getTokens();
-      idToken = tokens.idToken;
-    }
-    if (!idToken) return { ok: false, error: 'Google did not return an ID token. Check your Web Client ID.' };
-    const { data, error } = await sb.auth.signInWithIdToken({ provider: 'google', token: idToken });
-    if (error || !data.user) {
+    const { data, error } = await sb.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: GOOGLE_OAUTH_REDIRECT,
+        skipBrowserRedirect: true,
+        queryParams: { prompt: 'select_account' },
+      },
+    });
+    if (error || !data.url) {
       return {
         ok: false,
         error: friendlyAuthError(
           error?.message ||
-            'Google sign-in failed. Enable Google under Supabase → Authentication → Providers.',
+            'Could not start Google sign-in. Enable Google under Supabase → Authentication → Providers.',
         ),
       };
     }
-    return { ok: true, user: mapCloudUser(data.user) };
-  } catch (e: any) {
-    const code = e?.code || '';
-    if (code === 'SIGN_IN_CANCELLED' || code === '12501') {
-      return { ok: false, error: 'Google sign-in was cancelled.' };
-    }
-    if (code === 'DEVELOPER_ERROR' || String(e?.message || '').includes('DEVELOPER_ERROR')) {
-      return {
-        ok: false,
-        error:
-          'Google is misconfigured. Use the Web client ID in Settings, and match the iOS client to Info.plist.',
+
+    return await new Promise<CloudResult>((resolve) => {
+      let settled = false;
+      const finish = (result: CloudResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        sub.remove();
+        resolve(result);
       };
-    }
+
+      const handleUrl = async (url: string) => {
+        if (!isGoogleAuthCallback(url)) return;
+        const parts = parseAuthCallbackUrl(url);
+        try {
+          if (parts.code) {
+            const { data: sess, error: exErr } = await sb.auth.exchangeCodeForSession(parts.code);
+            if (exErr || !sess.user) {
+              finish({
+                ok: false,
+                error: friendlyAuthError(exErr?.message || 'Google sign-in failed after redirect.'),
+              });
+              return;
+            }
+            finish({ ok: true, user: mapCloudUser(sess.user) });
+            return;
+          }
+          if (parts.access_token && parts.refresh_token) {
+            const { data: sess, error: setErr } = await sb.auth.setSession({
+              access_token: parts.access_token,
+              refresh_token: parts.refresh_token,
+            });
+            if (setErr || !sess.user) {
+              finish({
+                ok: false,
+                error: friendlyAuthError(setErr?.message || 'Google sign-in failed after redirect.'),
+              });
+              return;
+            }
+            finish({ ok: true, user: mapCloudUser(sess.user) });
+            return;
+          }
+          finish({
+            ok: false,
+            error:
+              'Google redirect was missing tokens. Add litnotes://auth/callback under Supabase → Authentication → URL Configuration → Redirect URLs.',
+          });
+        } catch (e: any) {
+          finish({ ok: false, error: friendlyAuthError(e?.message || 'Google sign-in failed.') });
+        }
+      };
+
+      const sub = Linking.addEventListener('url', (e) => {
+        void handleUrl(e.url);
+      });
+
+      const timer = setTimeout(() => {
+        finish({ ok: false, error: 'Google sign-in timed out. Try again.' });
+      }, 120000);
+
+      void (async () => {
+        try {
+          const initial = await Linking.getInitialURL();
+          if (initial && isGoogleAuthCallback(initial)) void handleUrl(initial);
+          const supported = await Linking.canOpenURL(data.url!);
+          if (!supported) {
+            finish({ ok: false, error: 'Cannot open the Google sign-in page on this device.' });
+            return;
+          }
+          await Linking.openURL(data.url!);
+        } catch (e: any) {
+          finish({ ok: false, error: friendlyAuthError(e?.message || 'Could not open Google sign-in.') });
+        }
+      })();
+    });
+  } catch (e: any) {
     return { ok: false, error: friendlyAuthError(e?.message || 'Google sign-in failed.') };
   }
 }
@@ -208,14 +303,7 @@ export function isAppleSignInAvailable(): boolean {
 }
 
 function randomNonce(): string {
-  const out = new Uint8Array(16);
-  try {
-    const g = globalThis as { crypto?: { getRandomValues?: (a: Uint8Array) => Uint8Array } };
-    if (g.crypto?.getRandomValues) g.crypto.getRandomValues(out);
-    else for (let i = 0; i < out.length; i++) out[i] = Math.floor(Math.random() * 256);
-  } catch {
-    for (let i = 0; i < out.length; i++) out[i] = Math.floor(Math.random() * 256);
-  }
+  const out = randomBytes(16);
   return Array.from(out, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 

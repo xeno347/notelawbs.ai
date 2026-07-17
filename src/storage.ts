@@ -6,6 +6,8 @@ import {
   verifyPasswordAsync,
   needsHashUpgrade,
 } from './services/passwordHash';
+import { reportError, reportMessage } from './services/errorReporting';
+import { getSecret, setSecret } from './services/secureStore';
 
 const WORKSPACE_KEY = 'litnotes.workspace.v1';
 const PROJECTS_KEY = 'litnotes.projects.v1';
@@ -52,6 +54,8 @@ export type Persisted = {
   canvasTf?: { s: number; tx: number; ty: number };
   /** Linear notes blocks alongside the canvas (PRD 4.2). */
   linearNotes?: Array<{ id: string; text: string; page?: number | null; createdAt: number }>;
+  /** Matter-specific categories beyond the built-in judgment taxonomy. */
+  customCategories?: Array<{ key: string; label: string; color: string; soft: string }>;
   /** Right pane mode: visual canvas vs linear notes. */
   rightPaneMode?: 'canvas' | 'notes';
   /** PDF reader zoom scale (1 = fit-in-pane baseline). */
@@ -236,7 +240,8 @@ export async function loadWorkspace(): Promise<Persisted | null> {
   try {
     const raw = await AsyncStorage.getItem(key);
     return raw ? (JSON.parse(raw) as Persisted) : null;
-  } catch {
+  } catch (e) {
+    reportError(e, { where: 'loadWorkspace' }, 'warning');
     return null;
   }
 }
@@ -248,22 +253,70 @@ export function setPersistListener(l: ((data: Persisted) => void) | null): void 
   persistListener = l;
 }
 
+/** Notified when a workspace write fails (quota, disk, etc.). */
+let saveErrorListener: ((message: string) => void) | null = null;
+export function setSaveErrorListener(l: ((message: string) => void) | null): void {
+  saveErrorListener = l;
+}
+
+/** Soft ceiling — Android AsyncStorage has historically been tight; warn before hard fail. */
+export const WORKSPACE_SOFT_LIMIT_BYTES = 4 * 1024 * 1024;
+
+let pendingSave: Persisted | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
-export function saveWorkspaceDebounced(data: Persisted) {
+
+async function writeWorkspace(data: Persisted): Promise<boolean> {
   const key = workspaceKey();
-  if (!key) return;
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    AsyncStorage.setItem(key, JSON.stringify(data)).catch(() => {});
-    if (activeProjectId) touchProjectMeta(activeProjectId).catch(() => {});
+  if (!key) return false;
+  const payload = JSON.stringify(data);
+  if (payload.length > WORKSPACE_SOFT_LIMIT_BYTES) {
+    const msg = `Workspace is large (${Math.round(payload.length / (1024 * 1024))} MB). Remove ink/OCR pages or export a backup before it fails to save.`;
+    reportMessage(msg, { where: 'writeWorkspace', bytes: payload.length }, 'warning');
+    saveErrorListener?.(msg);
+  }
+  try {
+    await AsyncStorage.setItem(key, payload);
+    if (activeProjectId) await touchProjectMeta(activeProjectId);
     if (persistListener) {
       try {
         persistListener(data);
-      } catch {
-        /* noop */
+      } catch (e) {
+        reportError(e, { where: 'persistListener' }, 'warning');
       }
     }
+    return true;
+  } catch (e) {
+    reportError(e, { where: 'writeWorkspace', bytes: payload.length }, 'error');
+    saveErrorListener?.(
+      'Could not save your latest edits. Free storage space or export a backup, then try again.',
+    );
+    return false;
+  }
+}
+
+export function saveWorkspaceDebounced(data: Persisted) {
+  const key = workspaceKey();
+  if (!key) return;
+  pendingSave = data;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    const next = pendingSave;
+    pendingSave = null;
+    if (next) void writeWorkspace(next);
   }, 400);
+}
+
+/** Flush any pending debounced write immediately (call on background / before unload). */
+export async function flushWorkspaceNow(): Promise<boolean> {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  if (!pendingSave) return true;
+  const next = pendingSave;
+  pendingSave = null;
+  return writeWorkspace(next);
 }
 
 export async function clearWorkspace(): Promise<void> {
@@ -271,8 +324,8 @@ export async function clearWorkspace(): Promise<void> {
   if (!key) return;
   try {
     await AsyncStorage.removeItem(key);
-  } catch {
-    /* noop */
+  } catch (e) {
+    reportError(e, { where: 'clearWorkspace' }, 'warning');
   }
 }
 
@@ -281,7 +334,8 @@ export async function getSetting(key: string): Promise<string | null> {
     const raw = await AsyncStorage.getItem(SETTINGS_KEY);
     const obj = raw ? JSON.parse(raw) : {};
     return obj[key] ?? null;
-  } catch {
+  } catch (e) {
+    reportError(e, { where: 'getSetting', key }, 'warning');
     return null;
   }
 }
@@ -292,8 +346,8 @@ export async function setSetting(key: string, value: string): Promise<void> {
     const obj = raw ? JSON.parse(raw) : {};
     obj[key] = value;
     await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(obj));
-  } catch {
-    /* noop */
+  } catch (e) {
+    reportError(e, { where: 'setSetting', key }, 'warning');
   }
 }
 
@@ -316,18 +370,27 @@ export type Session = { userId: string; email: string; issuedAt: number };
 
 async function loadUsers(): Promise<Record<string, StoredUser>> {
   try {
+    const secured = await getSecret(AUTH_USERS_KEY);
+    if (secured) return JSON.parse(secured) as Record<string, StoredUser>;
+    // One-time migrate plaintext AsyncStorage blob → Keychain.
     const raw = await AsyncStorage.getItem(AUTH_USERS_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, StoredUser>) : {};
-  } catch {
+    if (!raw) return {};
+    const users = JSON.parse(raw) as Record<string, StoredUser>;
+    await setSecret(AUTH_USERS_KEY, raw);
+    await AsyncStorage.removeItem(AUTH_USERS_KEY);
+    return users && typeof users === 'object' ? users : {};
+  } catch (e) {
+    reportError(e, { where: 'loadUsers' }, 'warning');
     return {};
   }
 }
 
 async function saveUsers(users: Record<string, StoredUser>): Promise<void> {
   try {
-    await AsyncStorage.setItem(AUTH_USERS_KEY, JSON.stringify(users));
-  } catch {
-    /* noop */
+    await setSecret(AUTH_USERS_KEY, JSON.stringify(users));
+    await AsyncStorage.removeItem(AUTH_USERS_KEY);
+  } catch (e) {
+    reportError(e, { where: 'saveUsers' }, 'error');
   }
 }
 

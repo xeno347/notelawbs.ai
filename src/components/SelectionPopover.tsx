@@ -13,8 +13,9 @@ import {
   Alert,
 } from 'react-native';
 import { X } from 'lucide-react-native';
-import { CATEGORIES, CATEGORY_KEYS, getPalette, useTheme, SERIF, RADIUS, ELEVATION, glow } from '../theme';
+import { allCategories, catStyle, getPalette, useTheme, SERIF, RADIUS, ELEVATION, glow } from '../theme';
 import type { CategoryKey } from '../theme';
+import { useStore } from '../store';
 import type { MarkStyle } from '../store';
 import { useAnnotation } from '../annotationStore';
 import { translatePassage } from '../services/translateService';
@@ -49,6 +50,10 @@ export default function SelectionPopover({
   onCancel: () => void;
 }) {
   const p = useTheme();
+  const customCategories = useStore((s) => s.customCategories);
+  // Re-subscribe so custom matter categories appear in the picker.
+  void customCategories;
+  const categoryOptions = allCategories();
   const defaultMark = useAnnotation((s) => s.markStyle);
   const [category, setCategory] = useState<CategoryKey>('key_fact');
   const [text, setText] = useState('');
@@ -124,7 +129,7 @@ export default function SelectionPopover({
             <View>
               <Text style={s.title}>Send to canvas</Text>
               <Text style={s.subtitle}>
-                Page {page} · {CATEGORIES[category].label} · {markStyle}
+                Page {page} · {catStyle(category).label} · {markStyle}
               </Text>
             </View>
             <TouchableOpacity onPress={onCancel} hitSlop={10} style={s.closeBtn}>
@@ -134,18 +139,17 @@ export default function SelectionPopover({
 
           <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <View style={s.catRow}>
-              {CATEGORY_KEYS.map((key) => {
-                const active = category === key;
-                const cat = CATEGORIES[key];
+              {categoryOptions.map((cat) => {
+                const active = category === cat.key;
                 return (
                   <TouchableOpacity
-                    key={key}
+                    key={cat.key}
                     style={[
                       s.catPill,
                       { borderColor: active ? cat.color : p.border },
                       active && { backgroundColor: cat.soft },
                     ]}
-                    onPress={() => setCategory(key)}>
+                    onPress={() => setCategory(cat.key)}>
                     <View style={[s.catDot, { backgroundColor: cat.color }]} />
                     <Text style={[s.catText, active && { color: cat.color, fontWeight: '700' }]}>
                       {cat.label}
@@ -169,7 +173,7 @@ export default function SelectionPopover({
               })}
             </View>
 
-            <View style={[s.quoteWrap, { borderLeftColor: CATEGORIES[category].color }]}>
+            <View style={[s.quoteWrap, { borderLeftColor: catStyle(category).color }]}>
               <TextInput
                 style={s.quoteInput}
                 placeholder="Passage text (from OCR — edit if needed)"

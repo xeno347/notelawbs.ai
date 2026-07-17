@@ -2,33 +2,77 @@ import { Appearance, Platform } from 'react-native';
 import { create } from 'zustand';
 import { getSetting, setSetting } from './storage';
 
-export type CategoryKey = 'key_fact' | 'adverse' | 'favorable' | 'procedural' | 'ratio';
+/** Built-in taxonomy keys. Custom matter categories use free-form string keys. */
+export type BuiltinCategoryKey = 'key_fact' | 'adverse' | 'favorable' | 'procedural' | 'ratio';
+export type CategoryKey = BuiltinCategoryKey | (string & {});
 
 export type Category = { label: string; color: string; soft: string };
 
+export type CustomCategory = Category & { key: string };
+
 /**
- * Colorblind-safe palette: adverse/favorable previously sat on the red↔green
- * confusion axis (indistinguishable under protanopia/deuteranopia — the most
- * common form — which is unacceptable for a legal categorization where mixing
- * up "adverse" and "favorable" is consequential). Adverse is now vermillion
- * (orange-red) and favorable is steel blue, separated on the blue channel
- * rather than the red-green channel; procedural moved to a neutral slate so
- * it doesn't collide with favorable's new blue. Every category is also always
- * paired with its text label wherever it's rendered, so color is never the
- * only signal.
+ * Colorblind-safe legal categories mapped onto Notion's muted pastel highlight set.
+ * Labels are always shown with color so hue is never the only signal.
  */
-export const CATEGORIES: Record<CategoryKey, Category> = {
-  key_fact: { label: 'Key fact', color: '#D4A73B', soft: 'rgba(226,188,84,0.34)' },
-  adverse: { label: 'Adverse', color: '#C1440E', soft: 'rgba(193,68,14,0.28)' },
-  favorable: { label: 'Favorable', color: '#2E6DA4', soft: 'rgba(46,109,164,0.28)' },
-  procedural: { label: 'Procedural', color: '#5B6B7C', soft: 'rgba(91,107,124,0.28)' },
-  ratio: { label: 'Ratio', color: '#9270CC', soft: 'rgba(146,112,204,0.28)' },
+export const CATEGORIES: Record<BuiltinCategoryKey, Category> = {
+  key_fact: { label: 'Key fact', color: '#CB912F', soft: '#FDECC8' },
+  adverse: { label: 'Adverse', color: '#E03E3E', soft: '#FFE2DD' },
+  favorable: { label: 'Favorable', color: '#0F7B6C', soft: '#DBEDDB' },
+  procedural: { label: 'Procedural', color: '#2383E2', soft: '#D3E5EF' },
+  ratio: { label: 'Ratio', color: '#9065B0', soft: '#E8DEEE' },
 };
 
-export const CATEGORY_KEYS = Object.keys(CATEGORIES) as CategoryKey[];
+/** Notion-style annotation / tag highlight pastels */
+export const HIGHLIGHTS = {
+  yellow: '#FDECC8',
+  red: '#FFE2DD',
+  blue: '#D3E5EF',
+  green: '#DBEDDB',
+  purple: '#E8DEEE',
+} as const;
+
+export const CATEGORY_KEYS = Object.keys(CATEGORIES) as BuiltinCategoryKey[];
+
+/** Soft palette for user-defined categories (cycles). */
+export const CUSTOM_CATEGORY_PALETTE: Category[] = [
+  { label: '', color: '#CB912F', soft: '#FDECC8' },
+  { label: '', color: '#E03E3E', soft: '#FFE2DD' },
+  { label: '', color: '#2383E2', soft: '#D3E5EF' },
+  { label: '', color: '#0F7B6C', soft: '#DBEDDB' },
+  { label: '', color: '#9065B0', soft: '#E8DEEE' },
+  { label: '', color: '#787774', soft: '#F1F1EF' },
+];
+
+/** Project/matter custom categories — synced from the workspace store. */
+let extraCategories: Record<string, Category> = {};
+
+export function setExtraCategories(list: CustomCategory[]) {
+  const next: Record<string, Category> = {};
+  for (const c of list) {
+    if (!c?.key) continue;
+    next[c.key] = { label: c.label || c.key, color: c.color, soft: c.soft };
+  }
+  extraCategories = next;
+}
 
 export function catStyle(key: string): Category {
-  return (CATEGORIES as Record<string, Category>)[key] || CATEGORIES.key_fact;
+  if ((CATEGORIES as Record<string, Category>)[key]) {
+    return (CATEGORIES as Record<string, Category>)[key];
+  }
+  if (extraCategories[key]) return extraCategories[key];
+  return CATEGORIES.key_fact;
+}
+
+/** Built-ins + custom keys currently registered for this matter. */
+export function allCategoryKeys(): string[] {
+  return [...CATEGORY_KEYS, ...Object.keys(extraCategories)];
+}
+
+export function allCategories(): Array<{ key: string } & Category> {
+  return [
+    ...CATEGORY_KEYS.map((key) => ({ key, ...CATEGORIES[key] })),
+    ...Object.entries(extraCategories).map(([key, c]) => ({ key, ...c })),
+  ];
 }
 
 /** Document body — Georgia on iOS. UI chrome uses SF Pro (System). */
@@ -36,111 +80,116 @@ export const SERIF = Platform.select({ ios: 'Georgia', android: 'serif', default
 export const SANS = Platform.select({ ios: 'System', android: 'sans-serif', default: 'System' });
 
 /* ------------------------------------------------------------------ */
-/* iOS / iPadOS 26 — Liquid Glass + system semantic colors             */
-/* Brand brass/teal reserved for legal highlights & AI, not chrome.  */
+/* Notion-style visual system — monochrome-first, content-forward      */
 /* ------------------------------------------------------------------ */
 
 const light = {
-  bg: '#F2F2F7',
-  bg2: '#E5E5EA',
+  bg: '#FFFFFF',
+  bg2: '#F7F6F5',
   grouped: '#FFFFFF',
   surface: '#FFFFFF',
-  surface2: '#F2F2F7',
-  sidebar: '#F2F2F7',
-  sidebarActive: '#FFFFFF',
-  paperDesk: '#EBEBF0',
-  surfaceGlass: 'rgba(255,255,255,0.72)',
-  glassTint: 'rgba(255,255,255,0.55)',
-  glassBorder: 'rgba(255,255,255,0.65)',
-  overlay: 'rgba(0,0,0,0.4)',
-  border: 'rgba(60,60,67,0.18)',
-  borderStrong: 'rgba(60,60,67,0.29)',
-  separator: 'rgba(60,60,67,0.29)',
-  fill: 'rgba(120,120,128,0.16)',
-  fillSecondary: 'rgba(120,120,128,0.12)',
-  text: '#000000',
-  textMid: 'rgba(60,60,67,0.6)',
-  textMuted: 'rgba(60,60,67,0.3)',
-  tint: '#007AFF',
-  tintSoft: 'rgba(0,122,255,0.12)',
-  accent: '#B8791E',
-  accentAlt: '#D69A2E',
-  accentSoft: 'rgba(184,121,30,0.14)',
-  accentGlow: 'rgba(0,122,255,0.35)',
-  ai: '#0E9F8B',
-  aiSoft: 'rgba(14,159,139,0.12)',
-  aiGlow: 'rgba(14,159,139,0.28)',
-  iris: '#5B67E0',
-  irisSoft: 'rgba(91,103,224,0.12)',
-  success: '#34C759',
-  successSoft: 'rgba(52,199,89,0.14)',
-  warning: '#FF9500',
-  warningSoft: 'rgba(255,149,0,0.14)',
-  danger: '#FF3B30',
-  topbar: 'transparent',
-  topbarText: '#000000',
-  topbarMuted: 'rgba(60,60,67,0.6)',
-  dotGrid: 'rgba(60,60,67,0.08)',
-  ink1: '#000000',
-  ink2: '#B8791E',
+  surface2: '#F7F6F5',
+  sidebar: '#F7F6F5',
+  sidebarActive: 'rgba(0,0,0,0.03)',
+  paperDesk: '#F7F6F5',
+  surfaceGlass: '#FFFFFF',
+  glassTint: 'transparent',
+  glassBorder: '#EDECEC',
+  overlay: 'rgba(15,15,15,0.4)',
+  border: '#EDECEC',
+  borderStrong: '#E3E2E0',
+  separator: '#EDECEC',
+  fill: 'rgba(0,0,0,0.03)',
+  fillSecondary: 'rgba(0,0,0,0.04)',
+  hover: 'rgba(0,0,0,0.03)',
+  press: 'rgba(0,0,0,0.06)',
+  text: '#37352F',
+  textMid: '#787774',
+  textMuted: '#9B9A97',
+  tint: '#2383E2',
+  tintSoft: 'rgba(35,131,226,0.12)',
+  accent: '#2383E2',
+  accentAlt: '#2383E2',
+  accentSoft: 'rgba(35,131,226,0.12)',
+  accentGlow: 'transparent',
+  ai: '#9065B0',
+  aiSoft: '#E8DEEE',
+  aiGlow: 'transparent',
+  iris: '#9065B0',
+  irisSoft: '#E8DEEE',
+  success: '#0F7B6C',
+  successSoft: '#DBEDDB',
+  warning: '#CB912F',
+  warningSoft: '#FDECC8',
+  danger: '#E03E3E',
+  topbar: '#FFFFFF',
+  topbarText: '#37352F',
+  topbarMuted: '#787774',
+  dotGrid: 'rgba(55,53,47,0.06)',
+  ink1: '#37352F',
+  ink2: '#2383E2',
   pdfPage: '#FFFFFF',
-  pdfText: '#1D2733',
-  scanline: 'rgba(14,159,139,0.34)',
-  gradA: '#F2F2F7',
-  gradB: '#E5E5EA',
-  heroFrom: '#007AFF',
-  heroTo: '#5856D6',
+  pdfText: '#37352F',
+  scanline: 'rgba(35,131,226,0.2)',
+  gradA: '#FFFFFF',
+  gradB: '#F7F6F5',
+  heroFrom: '#2383E2',
+  heroTo: '#2383E2',
   blurType: 'light' as 'light' | 'dark',
 };
 
 const dark: typeof light = {
   ...light,
-  bg: '#000000',
-  bg2: '#1C1C1E',
-  grouped: '#1C1C1E',
-  surface: '#1C1C1E',
-  surface2: '#2C2C2E',
-  sidebar: '#000000',
-  sidebarActive: '#1C1C1E',
-  paperDesk: '#0C0C0E',
-  surfaceGlass: 'rgba(28,28,30,0.72)',
-  glassTint: 'rgba(28,28,30,0.55)',
-  glassBorder: 'rgba(255,255,255,0.12)',
+  bg: '#191919',
+  bg2: '#202020',
+  grouped: '#202020',
+  surface: '#202020',
+  surface2: '#252525',
+  sidebar: '#202020',
+  sidebarActive: 'rgba(255,255,255,0.055)',
+  paperDesk: '#191919',
+  surfaceGlass: '#202020',
+  glassTint: 'transparent',
+  glassBorder: '#2F2F2F',
   overlay: 'rgba(0,0,0,0.55)',
-  border: 'rgba(84,84,88,0.36)',
-  borderStrong: 'rgba(84,84,88,0.65)',
-  separator: 'rgba(84,84,88,0.65)',
-  fill: 'rgba(120,120,128,0.32)',
-  fillSecondary: 'rgba(120,120,128,0.24)',
-  text: '#FFFFFF',
-  textMid: 'rgba(235,235,245,0.6)',
-  textMuted: 'rgba(235,235,245,0.3)',
-  tint: '#0A84FF',
-  tintSoft: 'rgba(10,132,255,0.18)',
-  accent: '#E8A13C',
-  accentSoft: 'rgba(232,161,60,0.16)',
-  accentGlow: 'rgba(10,132,255,0.4)',
-  ai: '#38E0C8',
-  aiSoft: 'rgba(56,224,200,0.14)',
-  aiGlow: 'rgba(56,224,200,0.35)',
-  iris: '#7C8CF8',
-  irisSoft: 'rgba(124,140,248,0.16)',
-  success: '#30D158',
-  successSoft: 'rgba(48,209,88,0.14)',
-  warning: '#FF9F0A',
-  warningSoft: 'rgba(255,159,10,0.14)',
-  danger: '#FF453A',
-  topbar: 'transparent',
-  topbarText: '#FFFFFF',
-  topbarMuted: 'rgba(235,235,245,0.55)',
-  dotGrid: 'rgba(255,255,255,0.06)',
-  ink1: '#FFFFFF',
-  ink2: '#E8A13C',
+  border: '#2F2F2F',
+  borderStrong: '#3A3A3A',
+  separator: '#2F2F2F',
+  fill: 'rgba(255,255,255,0.055)',
+  fillSecondary: 'rgba(255,255,255,0.08)',
+  hover: 'rgba(255,255,255,0.055)',
+  press: 'rgba(255,255,255,0.08)',
+  text: '#E3E2E0',
+  textMid: '#9B9A97',
+  textMuted: '#6F6E69',
+  tint: '#529CCA',
+  tintSoft: 'rgba(82,156,202,0.18)',
+  accent: '#529CCA',
+  accentAlt: '#529CCA',
+  accentSoft: 'rgba(82,156,202,0.18)',
+  accentGlow: 'transparent',
+  ai: '#9A6DD7',
+  aiSoft: 'rgba(154,109,215,0.18)',
+  aiGlow: 'transparent',
+  iris: '#9A6DD7',
+  irisSoft: 'rgba(154,109,215,0.18)',
+  success: '#4DAB9A',
+  successSoft: 'rgba(77,171,154,0.18)',
+  warning: '#FFDC49',
+  warningSoft: 'rgba(255,220,73,0.16)',
+  danger: '#FF7369',
+  topbar: '#191919',
+  topbarText: '#E3E2E0',
+  topbarMuted: '#9B9A97',
+  dotGrid: 'rgba(255,255,255,0.05)',
+  ink1: '#E3E2E0',
+  ink2: '#529CCA',
   pdfPage: '#FFFFFF',
-  gradA: '#000000',
-  gradB: '#1C1C1E',
-  heroFrom: '#0A84FF',
-  heroTo: '#5E5CE6',
+  pdfText: '#37352F',
+  gradA: '#191919',
+  gradB: '#202020',
+  heroFrom: '#529CCA',
+  heroTo: '#529CCA',
   blurType: 'dark' as 'light' | 'dark',
 };
 
@@ -213,69 +262,87 @@ export function useScheme(): Scheme {
   return useThemeStore((s) => s.scheme);
 }
 
+/** Notion scale — body 16/1.5, headings via size + weight. */
 export const TYPE = {
-  largeTitle: { fontSize: 34, fontWeight: '700' as const, letterSpacing: 0.37, fontFamily: SANS },
-  title1: { fontSize: 28, fontWeight: '700' as const, letterSpacing: 0.36, fontFamily: SANS },
-  title2: { fontSize: 22, fontWeight: '700' as const, letterSpacing: 0.35, fontFamily: SANS },
-  title3: { fontSize: 20, fontWeight: '600' as const, letterSpacing: 0.38, fontFamily: SANS },
-  headline: { fontSize: 17, fontWeight: '600' as const, letterSpacing: -0.41, fontFamily: SANS },
-  body: { fontSize: 17, lineHeight: 22, fontWeight: '400' as const, letterSpacing: -0.41, fontFamily: SANS },
-  callout: { fontSize: 16, lineHeight: 21, fontWeight: '400' as const, letterSpacing: -0.32, fontFamily: SANS },
-  subhead: { fontSize: 15, lineHeight: 20, fontWeight: '400' as const, letterSpacing: -0.24, fontFamily: SANS },
-  footnote: { fontSize: 13, lineHeight: 18, fontWeight: '400' as const, letterSpacing: -0.08, fontFamily: SANS },
+  largeTitle: { fontSize: 32, fontWeight: '700' as const, letterSpacing: -0.5, fontFamily: SANS },
+  title1: { fontSize: 28, fontWeight: '700' as const, letterSpacing: -0.4, fontFamily: SANS },
+  title2: { fontSize: 22, fontWeight: '600' as const, letterSpacing: -0.3, fontFamily: SANS },
+  title3: { fontSize: 20, fontWeight: '600' as const, letterSpacing: -0.2, fontFamily: SANS },
+  headline: { fontSize: 16, fontWeight: '600' as const, letterSpacing: -0.1, fontFamily: SANS },
+  body: { fontSize: 16, lineHeight: 24, fontWeight: '400' as const, letterSpacing: -0.1, fontFamily: SANS },
+  callout: { fontSize: 15, lineHeight: 22, fontWeight: '400' as const, letterSpacing: -0.08, fontFamily: SANS },
+  subhead: { fontSize: 14, lineHeight: 20, fontWeight: '400' as const, letterSpacing: -0.06, fontFamily: SANS },
+  footnote: { fontSize: 13, lineHeight: 18, fontWeight: '400' as const, letterSpacing: 0, fontFamily: SANS },
   caption1: { fontSize: 12, lineHeight: 16, fontWeight: '400' as const, letterSpacing: 0, fontFamily: SANS },
-  caption2: { fontSize: 11, lineHeight: 13, fontWeight: '400' as const, letterSpacing: 0.06, fontFamily: SANS },
-  bodySerif: { fontSize: 15, lineHeight: 22.5, fontFamily: SERIF },
-  meta: { fontSize: 13, fontWeight: '600' as const, letterSpacing: -0.08, fontFamily: SANS },
+  caption2: { fontSize: 11, lineHeight: 14, fontWeight: '400' as const, letterSpacing: 0, fontFamily: SANS },
+  bodySerif: { fontSize: 16, lineHeight: 24, fontFamily: SERIF },
+  meta: { fontSize: 12, fontWeight: '500' as const, letterSpacing: 0, fontFamily: SANS },
 };
 
-/** iOS continuous corner radii — 10 grouped inset, 13 card, 20 sheet */
-export const RADIUS = { sm: 10, md: 13, lg: 16, xl: 20, pill: 999 };
+/** Notion radii — 4–6 row hover, 6–8 cards, pill for toolbars */
+export const RADIUS = { sm: 4, md: 6, lg: 8, xl: 12, pill: 999 };
 
+/** Flat chrome — no drop shadows. Kept as empty/minimal so existing spreads compile. */
 export const ELEVATION = {
   card: {
+    shadowColor: 'transparent',
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
+  },
+  cardActive: {
+    shadowColor: 'transparent',
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
+  },
+  panel: {
+    shadowColor: 'transparent',
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
+  },
+  popover: {
+    shadowColor: 'transparent',
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
+  },
+  float: {
+    shadowColor: 'transparent',
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
+  },
+  /** Soft page-edge only — for PDF page mimic */
+  page: {
     shadowColor: '#000',
     shadowOpacity: 0.06,
     shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
-  },
-  cardActive: {
-    shadowColor: '#000',
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
-  },
-  panel: {
-    shadowColor: '#000',
-    shadowOpacity: 0.18,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 12,
-  },
-  popover: {
-    shadowColor: '#000',
-    shadowOpacity: 0.22,
-    shadowRadius: 28,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 16,
-  },
-  float: {
-    shadowColor: '#000',
-    shadowOpacity: 0.14,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 10,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
   },
 };
 
-export function glow(color: string, opacity = 0.35) {
+/** No-op for Notion flat chrome (kept for call-site compatibility). */
+export function glow(_color: string, _opacity = 0.35) {
   return {
-    shadowColor: color,
-    shadowOpacity: opacity,
-    shadowRadius: 12,
+    shadowColor: 'transparent',
+    shadowOpacity: 0,
+    shadowRadius: 0,
     shadowOffset: { width: 0, height: 0 },
-    elevation: 6,
+    elevation: 0,
   };
 }
+
+/** Sidebar widths — Notion / HIG */
+export const SIDEBAR_W = 260;
+export const SIDEBAR_COMPACT_W = 56;
+export const ICON_SIZE = 18;
+export const ROW_H = 30;
+export const MOTION_MS = 160;

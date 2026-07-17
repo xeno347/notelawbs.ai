@@ -46,7 +46,7 @@ export default function OnboardingScreen({ onDone }: { onDone: () => void }) {
         <View style={{ width: '100%', maxWidth: isTablet ? 640 : 460, alignSelf: 'center' }}>
           <View style={styles.header}>
             <BrandMark size={52} />
-            <Text style={[styles.title, { color: p.text }]}>Welcome to LitNotes Canvas</Text>
+            <Text style={[styles.title, { color: p.text }]}>Welcome to NoteLawbs.Ai</Text>
             <Text style={[styles.sub, { color: p.textMid }]}>
               A LiquidText-style research desk — pull ideas out of documents into a linked
               workspace, then outline and export.

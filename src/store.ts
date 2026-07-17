@@ -15,7 +15,13 @@ import {
   type Persisted,
   type ProjectMeta,
 } from './storage';
-import type { CategoryKey } from './theme';
+import {
+  CATEGORIES,
+  type CategoryKey,
+  type CustomCategory,
+  CUSTOM_CATEGORY_PALETTE,
+  setExtraCategories,
+} from './theme';
 import type { ResearchResult } from './research/researchCore';
 import type { OcrPageData } from './services/ocrService';
 import { setCloudOcrEnabled } from './services/cloudOcrService';
@@ -73,8 +79,23 @@ export type ExcerptData = {
 };
 
 export type AiData = { heading: string; body: string; citations: string[] };
-export type NoteData = { text: string };
-export type GroupData = { title: string };
+
+/** Freeform synthesis note — optionally cites a highlight/page for evidence. */
+export type NoteData = {
+  text: string;
+  page?: number | null;
+  highlightId?: string;
+  docName?: string;
+  docId?: string;
+};
+
+export type GroupData = {
+  title: string;
+  /** Accent color for the section chrome (hex). */
+  color?: string;
+  /** When true, member cards are hidden and the box collapses to the title bar. */
+  collapsed?: boolean;
+};
 
 export type FlowNode = {
   id: string;
@@ -218,6 +239,41 @@ function uid(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+/** Debounce window that batches a typing pause into one undo checkpoint. */
+const TEXT_EDIT_HISTORY_MS = 700;
+let textEditHistoryArmed = false;
+let textEditHistoryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function armTextEditHistory(commit: () => void) {
+  if (!textEditHistoryArmed) {
+    commit();
+    textEditHistoryArmed = true;
+  }
+  if (textEditHistoryTimer) clearTimeout(textEditHistoryTimer);
+  textEditHistoryTimer = setTimeout(() => {
+    textEditHistoryArmed = false;
+    textEditHistoryTimer = null;
+  }, TEXT_EDIT_HISTORY_MS);
+}
+
+function resetTextEditHistoryGate() {
+  textEditHistoryArmed = false;
+  if (textEditHistoryTimer) {
+    clearTimeout(textEditHistoryTimer);
+    textEditHistoryTimer = null;
+  }
+}
+
+function slugKey(label: string): string {
+  const base = label
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 32);
+  return base || `custom_${Date.now().toString(36)}`;
+}
+
 export type LibraryDoc = {
   id: string;
   name: string;
@@ -286,6 +342,27 @@ type StoreState = {
   addLinearNote: (text?: string, page?: number | null) => LinearNoteBlock;
   updateLinearNote: (id: string, patch: Partial<Pick<LinearNoteBlock, 'text' | 'page'>>) => void;
   removeLinearNote: (id: string) => void;
+  /** Drop a linear note onto the canvas as a Note card (keeps page cite). */
+  sendLinearNoteToCanvas: (id: string) => FlowNode | null;
+  /** Pull a canvas note/excerpt into the linear outline. */
+  pullNodeToLinear: (nodeId: string) => LinearNoteBlock | null;
+
+  /** Matter-specific categories beyond the built-in judgment taxonomy. */
+  customCategories: CustomCategory[];
+  addCustomCategory: (label: string, color?: string, soft?: string) => CustomCategory;
+  removeCustomCategory: (key: string) => void;
+  updateCustomCategory: (key: string, patch: Partial<Pick<CustomCategory, 'label' | 'color' | 'soft'>>) => void;
+
+  /** Multi-select on the freeform canvas. */
+  selectedNodeIds: string[];
+  setSelectedNodeIds: (ids: string[]) => void;
+  toggleNodeSelected: (id: string, additive?: boolean) => void;
+  clearSelection: () => void;
+  selectNodesInRect: (rect: { x: number; y: number; w: number; h: number }) => void;
+  removeSelectedNodes: () => void;
+  moveNodesBy: (ids: string[], dx: number, dy: number) => void;
+  setSelectedCategory: (category: CategoryKey) => void;
+  setSelectedGroupColor: (color: string) => void;
   /** PDF reader zoom multiplier (1 = baseline fit-in-pane). */
   pdfZoom: number;
   setPdfZoom: (z: number) => void;
@@ -353,9 +430,10 @@ type StoreState = {
   nextDropPos: () => { x: number; y: number };
   addExcerptNode: (data: ExcerptData, opts?: { skipHistory?: boolean }) => FlowNode;
   addAiNode: (data: AiData) => FlowNode;
-  addNoteNode: (text?: string) => FlowNode;
+  addNoteNode: (text?: string, cite?: Partial<Omit<NoteData, 'text'>>) => FlowNode;
   addGroupNode: (title?: string) => FlowNode;
   updateNodeData: (id: string, data: Partial<ExcerptData | AiData | NoteData | GroupData>) => void;
+  toggleGroupCollapsed: (id: string) => void;
   moveNode: (id: string, x: number, y: number) => void;
   resizeNode: (id: string, w: number, h: number) => void;
   bringNodeToFront: (id: string) => void;
@@ -512,6 +590,7 @@ function snapshot(s: StoreState): Persisted {
     rightPaneMode: s.rightPaneMode,
     pdfZoom: s.pdfZoom,
     translations: s.translations,
+    customCategories: s.customCategories,
   };
 }
 
@@ -531,6 +610,8 @@ const emptyWorkspace = {
   bookmarks: [] as Bookmark[],
   docBoard: { ...DEFAULT_DOC_BOARD },
   linearNotes: [] as LinearNoteBlock[],
+  customCategories: [] as CustomCategory[],
+  selectedNodeIds: [] as string[],
   rightPaneMode: 'canvas' as const,
   pdfZoom: 1,
   readingMode: 'page' as ReadingMode,
@@ -583,6 +664,8 @@ function applyPersisted(data: Persisted) {
     bookmarks: data.bookmarks || [],
     docBoard: data.docBoard && data.docBoard.w > 100 ? data.docBoard : { ...DEFAULT_DOC_BOARD },
     linearNotes: Array.isArray(data.linearNotes) ? data.linearNotes : [],
+    customCategories: Array.isArray(data.customCategories) ? data.customCategories : [],
+    selectedNodeIds: [] as string[],
     rightPaneMode: (data.rightPaneMode === 'notes' ? 'notes' : 'canvas') as 'canvas' | 'notes',
     pdfZoom:
       typeof data.pdfZoom === 'number' && data.pdfZoom >= 0.5 && data.pdfZoom <= 4
@@ -657,6 +740,216 @@ export const useStore = create<StoreState>((set, get) => ({
     set((s) => ({ linearNotes: s.linearNotes.filter((n) => n.id !== id) }));
     saveWorkspaceDebounced(snapshot(get()));
   },
+
+  sendLinearNoteToCanvas: (id) => {
+    const note = get().linearNotes.find((n) => n.id === id);
+    if (!note) return null;
+    return get().addNoteNode(note.text, {
+      page: note.page ?? null,
+      docName: get().docName || undefined,
+      docId: get().activeDocId || undefined,
+    });
+  },
+
+  pullNodeToLinear: (nodeId) => {
+    const n = get().nodes.find((x) => x.id === nodeId);
+    if (!n) return null;
+    let text = '';
+    let page: number | null = null;
+    if (n.type === 'note') {
+      const d = n.data as NoteData;
+      text = d.text || '';
+      page = d.page ?? null;
+    } else if (n.type === 'excerpt') {
+      const d = n.data as ExcerptData;
+      text = d.note?.trim() ? `${d.text}\n\n_${d.note}_` : d.text;
+      page = d.page;
+    } else if (n.type === 'ai') {
+      const d = n.data as AiData;
+      text = `## ${d.heading}\n\n${d.body}`;
+    } else if (n.type === 'group') {
+      const d = n.data as GroupData;
+      text = `# ${d.title || 'Section'}`;
+    } else {
+      return null;
+    }
+    if (!text.trim()) return null;
+    return get().addLinearNote(text.trim(), page);
+  },
+
+  addCustomCategory: (label, color, soft) => {
+    const trimmed = label.trim();
+    if (!trimmed) {
+      return { key: '', label: '', color: '#787774', soft: '#F1F1EF' };
+    }
+    let key = slugKey(trimmed);
+    const existing = new Set([
+      ...Object.keys(CATEGORIES),
+      ...get().customCategories.map((c) => c.key),
+    ]);
+    if (existing.has(key)) key = `${key}_${Date.now().toString(36).slice(-4)}`;
+    const tone = CUSTOM_CATEGORY_PALETTE[get().customCategories.length % CUSTOM_CATEGORY_PALETTE.length];
+    const cat: CustomCategory = {
+      key,
+      label: trimmed,
+      color: color || tone.color,
+      soft: soft || tone.soft,
+    };
+    const next = [...get().customCategories, cat];
+    set({ customCategories: next });
+    setExtraCategories(next);
+    saveWorkspaceDebounced(snapshot(get()));
+    return cat;
+  },
+
+  removeCustomCategory: (key) => {
+    const next = get().customCategories.filter((c) => c.key !== key);
+    set({ customCategories: next });
+    setExtraCategories(next);
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  updateCustomCategory: (key, patch) => {
+    const next = get().customCategories.map((c) => (c.key === key ? { ...c, ...patch } : c));
+    set({ customCategories: next });
+    setExtraCategories(next);
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  setSelectedNodeIds: (ids) => set({ selectedNodeIds: [...new Set(ids)] }),
+  toggleNodeSelected: (id, additive = false) => {
+    set((s) => {
+      if (!additive) {
+        return { selectedNodeIds: s.selectedNodeIds.includes(id) && s.selectedNodeIds.length === 1 ? [] : [id] };
+      }
+      const has = s.selectedNodeIds.includes(id);
+      return {
+        selectedNodeIds: has
+          ? s.selectedNodeIds.filter((x) => x !== id)
+          : [...s.selectedNodeIds, id],
+      };
+    });
+  },
+  clearSelection: () => set({ selectedNodeIds: [] }),
+
+  selectNodesInRect: (rect) => {
+    const { nodes } = get();
+    const x1 = Math.min(rect.x, rect.x + rect.w);
+    const y1 = Math.min(rect.y, rect.y + rect.h);
+    const x2 = Math.max(rect.x, rect.x + rect.w);
+    const y2 = Math.max(rect.y, rect.y + rect.h);
+    const ids = nodes
+      .filter((n) => {
+        if (n.type === 'group') {
+          const g = n.data as GroupData;
+          // Always allow selecting the group chrome itself.
+          void g;
+        }
+        const w = n.w || (n.type === 'ai' ? 288 : n.type === 'group' ? GROUP_DEFAULT_W : 240);
+        const h = n.h || (n.type === 'group' ? GROUP_DEFAULT_H : 140);
+        const cx = n.x + w / 2;
+        const cy = n.y + h / 2;
+        return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
+      })
+      .map((n) => n.id);
+    set({ selectedNodeIds: ids });
+  },
+
+  removeSelectedNodes: () => {
+    const ids = get().selectedNodeIds;
+    if (!ids.length) return;
+    get().commitHistory();
+    resetTextEditHistoryGate();
+    // Remove in one pass to avoid N history commits.
+    const idSet = new Set(ids);
+    const removed = get().nodes.filter((n) => idSet.has(n.id));
+    const orphanHighlightIds = new Set(
+      removed
+        .filter((n) => n.type === 'excerpt')
+        .map((n) => (n.data as ExcerptData).highlightId)
+        .filter(Boolean),
+    );
+    set((s) => {
+      let nodes = s.nodes.filter((n) => !idSet.has(n.id));
+      // Detach children of deleted groups.
+      for (const r of removed) {
+        if (r.type === 'group') {
+          nodes = nodes.map((n) => (n.groupId === r.id ? { ...n, groupId: undefined } : n));
+        }
+      }
+      const highlights = s.highlights.filter((h) => {
+        if (!orphanHighlightIds.has(h.id)) return true;
+        return nodes.some(
+          (n) => n.type === 'excerpt' && (n.data as ExcerptData).highlightId === h.id,
+        );
+      });
+      return {
+        nodes,
+        highlights,
+        edges: s.edges.filter((e) => !idSet.has(e.source) && !idSet.has(e.target)),
+        selectedNodeIds: [],
+        nodeSizes: Object.fromEntries(Object.entries(s.nodeSizes).filter(([id]) => !idSet.has(id))),
+        nodeAnchors: Object.fromEntries(Object.entries(s.nodeAnchors).filter(([id]) => !idSet.has(id))),
+      };
+    });
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  moveNodesBy: (ids, dx, dy) => {
+    if (!ids.length || (!dx && !dy)) return;
+    const idSet = new Set(ids);
+    const snap = get().snapToGrid;
+    set((s) => ({
+      nodes: s.nodes.map((n) => {
+        if (!idSet.has(n.id)) return n;
+        let x = n.x + dx;
+        let y = n.y + dy;
+        if (snap) {
+          x = Math.round(x / GRID_STEP) * GRID_STEP;
+          y = Math.round(y / GRID_STEP) * GRID_STEP;
+        }
+        return { ...n, x, y };
+      }),
+    }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  setSelectedCategory: (category) => {
+    const ids = get().selectedNodeIds;
+    if (!ids.length) return;
+    get().commitHistory();
+    const idSet = new Set(ids);
+    set((s) => ({
+      nodes: s.nodes.map((n) => {
+        if (!idSet.has(n.id) || n.type !== 'excerpt') return n;
+        return { ...n, data: { ...(n.data as ExcerptData), category } };
+      }),
+      highlights: s.highlights.map((h) => {
+        const linked = s.nodes.some(
+          (n) =>
+            idSet.has(n.id) &&
+            n.type === 'excerpt' &&
+            (n.data as ExcerptData).highlightId === h.id,
+        );
+        return linked ? { ...h, category } : h;
+      }),
+    }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  setSelectedGroupColor: (color) => {
+    const ids = get().selectedNodeIds;
+    if (!ids.length) return;
+    get().commitHistory();
+    const idSet = new Set(ids);
+    set((s) => ({
+      nodes: s.nodes.map((n) => {
+        if (!idSet.has(n.id) || n.type !== 'group') return n;
+        return { ...n, data: { ...(n.data as GroupData), color } };
+      }),
+    }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
   setPdfZoom: (z) => {
     const zoom = Math.min(4, Math.max(0.5, Number.isFinite(z) ? z : 1));
     set({ pdfZoom: zoom });
@@ -725,6 +1018,7 @@ export const useStore = create<StoreState>((set, get) => ({
     dropCounter = 0;
     await setActiveProject(null);
     const index = await loadProjectIndex();
+    setExtraCategories([]);
     set({
       view: 'library',
       projects: index.projects,
@@ -741,12 +1035,14 @@ export const useStore = create<StoreState>((set, get) => ({
     await setActiveProject(meta.id);
     const index = await loadProjectIndex();
     dropCounter = 0;
+    const applied = applyPersisted(data);
+    setExtraCategories(applied.customCategories || []);
     set({
       view: 'workspace',
       projects: index.projects,
       projectId: meta.id,
       projectTitle: meta.title,
-      ...applyPersisted(data),
+      ...applied,
       flashTarget: null,
       linking: { active: false, step: null, inkPoint: null },
     });
@@ -759,12 +1055,14 @@ export const useStore = create<StoreState>((set, get) => ({
     const data = await loadWorkspace();
     const nodes = data ? (data.nodes || []).filter((n: any) => n.type !== 'ink') : [];
     dropCounter = nodes.length;
+    const applied = data ? applyPersisted(data) : emptyWorkspace;
+    setExtraCategories(applied.customCategories || []);
     set({
       view: 'workspace',
       projects: index.projects,
       projectId: id,
       projectTitle: meta?.title || 'Project',
-      ...(data ? applyPersisted(data) : emptyWorkspace),
+      ...applied,
       flashTarget: null,
       linking: { active: false, step: null, inkPoint: null },
     });
@@ -1083,8 +1381,9 @@ export const useStore = create<StoreState>((set, get) => ({
     return node;
   },
 
-  addNoteNode: (text = '') => {
+  addNoteNode: (text = '', cite) => {
     get().commitHistory();
+    resetTextEditHistoryGate();
     const pos = get().nextDropPos();
     const maxZ = get().nodes.reduce((m, n) => Math.max(m, n.z || 0), 0);
     const node: FlowNode = {
@@ -1094,7 +1393,13 @@ export const useStore = create<StoreState>((set, get) => ({
       y: pos.y,
       w: 240,
       z: maxZ + 1,
-      data: { text },
+      data: {
+        text,
+        page: cite?.page ?? null,
+        highlightId: cite?.highlightId,
+        docName: cite?.docName || get().docName || undefined,
+        docId: cite?.docId || get().activeDocId || undefined,
+      },
     };
     set((s) => ({ nodes: [...s.nodes, node] }));
     saveWorkspaceDebounced(snapshot(get()));
@@ -1103,6 +1408,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   addGroupNode: (title = 'Untitled section') => {
     get().commitHistory();
+    resetTextEditHistoryGate();
     const pos = get().nextDropPos();
     const maxZ = get().nodes.reduce((m, n) => Math.max(m, n.z || 0), 0);
     const node: FlowNode = {
@@ -1113,7 +1419,7 @@ export const useStore = create<StoreState>((set, get) => ({
       w: GROUP_DEFAULT_W,
       h: GROUP_DEFAULT_H,
       z: maxZ + 1,
-      data: { title },
+      data: { title, collapsed: false },
     };
     set((s) => ({ nodes: [...s.nodes, node] }));
     saveWorkspaceDebounced(snapshot(get()));
@@ -1121,9 +1427,23 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   updateNodeData: (id, data) => {
+    armTextEditHistory(() => get().commitHistory());
     set((s) => ({
       nodes: s.nodes.map((n) =>
         n.id === id ? { ...n, data: { ...(n.data as object), ...data } as FlowNode['data'] } : n,
+      ),
+    }));
+    saveWorkspaceDebounced(snapshot(get()));
+  },
+
+  toggleGroupCollapsed: (id) => {
+    const n = get().nodes.find((x) => x.id === id);
+    if (!n || n.type !== 'group') return;
+    get().commitHistory();
+    const data = n.data as GroupData;
+    set((s) => ({
+      nodes: s.nodes.map((x) =>
+        x.id === id ? { ...x, data: { ...data, collapsed: !data.collapsed } } : x,
       ),
     }));
     saveWorkspaceDebounced(snapshot(get()));
@@ -1185,14 +1505,16 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!n || n.type === 'group') return;
     const cx = n.x + (n.w || 240) / 2;
     const cy = n.y + (n.h || 140) / 2;
-    const group = nodes.find(
-      (g) =>
-        g.type === 'group' &&
+    const group = nodes.find((g) => {
+      if (g.type !== 'group') return false;
+      if ((g.data as GroupData).collapsed) return false;
+      return (
         cx >= g.x &&
         cx <= g.x + (g.w || GROUP_DEFAULT_W) &&
         cy >= g.y &&
-        cy <= g.y + (g.h || GROUP_DEFAULT_H),
-    );
+        cy <= g.y + (g.h || GROUP_DEFAULT_H)
+      );
+    });
     const groupId = group?.id;
     if (n.groupId !== groupId) {
       set((s) => ({ nodes: s.nodes.map((x) => (x.id === id ? { ...x, groupId } : x)) }));
@@ -1203,6 +1525,7 @@ export const useStore = create<StoreState>((set, get) => ({
   toggleSnapToGrid: () => set((s) => ({ snapToGrid: !s.snapToGrid })),
 
   commitHistory: () => {
+    resetTextEditHistoryGate();
     set((s) => {
       const top = s.history.past[s.history.past.length - 1];
       if (top && top.nodes === s.nodes && top.edges === s.edges) return s;
@@ -1212,12 +1535,14 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   undoCanvas: () => {
+    resetTextEditHistoryGate();
     const { history, nodes, edges } = get();
     const prev = history.past[history.past.length - 1];
     if (!prev) return;
     set({
       nodes: prev.nodes,
       edges: prev.edges,
+      selectedNodeIds: [],
       history: {
         past: history.past.slice(0, -1),
         future: [...history.future, { nodes, edges }].slice(-50),
@@ -1227,12 +1552,14 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   redoCanvas: () => {
+    resetTextEditHistoryGate();
     const { history, nodes, edges } = get();
     const next = history.future[history.future.length - 1];
     if (!next) return;
     set({
       nodes: next.nodes,
       edges: next.edges,
+      selectedNodeIds: [],
       history: {
         past: [...history.past, { nodes, edges }],
         future: history.future.slice(0, -1),

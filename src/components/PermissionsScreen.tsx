@@ -54,7 +54,7 @@ export default function PermissionsScreen() {
     if (state === 'blocked') {
       Alert.alert(
         'Enable in Settings',
-        'This permission was previously denied. Turn it on in Settings → LitNotes Canvas.',
+        'This permission was previously denied. Turn it on in Settings → NoteLawbs.Ai.',
         [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Open Settings', onPress: () => openAppPermissionSettings() },
@@ -92,7 +92,7 @@ export default function PermissionsScreen() {
         {user?.displayName ? `You're in, ${user.displayName.split(' ')[0]}.` : "You're all set."}
       </Text>
       <Text style={[styles.sub, { color: p.textMid }]}>
-        Allow Camera and Microphone so LitNotes can capture documents and voice notes. You can change
+        Allow Camera and Microphone so NoteLawbs.Ai can capture documents and voice notes. You can change
         these anytime in Settings.
       </Text>
 

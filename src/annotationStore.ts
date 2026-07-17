@@ -12,14 +12,13 @@ export type ToolMode =
   | 'strikethrough'
   | 'eraser';
 
+/** Ink pens — Notion accent family (pastels are for highlight fills via CATEGORIES.soft). */
 export const INK_SWATCHES = [
-  '#C0392B',
-  '#E67E22',
-  '#F1C40F',
-  '#27AE60',
-  '#2980B9',
-  '#8E44AD',
-  '#2C3E50',
+  '#CB912F',
+  '#E03E3E',
+  '#2383E2',
+  '#0F7B6C',
+  '#9065B0',
 ] as const;
 
 type AnnotationState = {
@@ -29,6 +28,8 @@ type AnnotationState = {
   fitSerial: number;
   /** Drag offset for floating annotation bar (pixels from default bottom-center). */
   barOffset: { x: number; y: number };
+  /** Collapsed to a compact “Tools” pill. */
+  barCollapsed: boolean;
   /** Preferred mark style for text → canvas. */
   markStyle: MarkStyle;
   setTool: (t: ToolMode) => void;
@@ -37,6 +38,8 @@ type AnnotationState = {
   setFingerDraw: (on: boolean) => void;
   setBarOffset: (x: number, y: number) => void;
   resetBarOffset: () => void;
+  setBarCollapsed: (v: boolean) => void;
+  toggleBarCollapsed: () => void;
   requestFit: () => void;
   setMarkStyle: (m: MarkStyle) => void;
   cyclePencilTool: () => void;
@@ -56,6 +59,7 @@ export const useAnnotation = create<AnnotationState>((set) => ({
   fingerDraw: true,
   fitSerial: 0,
   barOffset: { x: 0, y: 0 },
+  barCollapsed: false,
   markStyle: 'highlight',
   setTool: (tool) => set((s) => ({ tool, markStyle: markStyleForTool(tool, s.markStyle) })),
   setInkColor: (inkColor) => set({ inkColor }),
@@ -63,6 +67,8 @@ export const useAnnotation = create<AnnotationState>((set) => ({
   setFingerDraw: (fingerDraw) => set({ fingerDraw }),
   setBarOffset: (x, y) => set({ barOffset: { x, y } }),
   resetBarOffset: () => set({ barOffset: { x: 0, y: 0 } }),
+  setBarCollapsed: (barCollapsed) => set({ barCollapsed }),
+  toggleBarCollapsed: () => set((s) => ({ barCollapsed: !s.barCollapsed })),
   requestFit: () => set((s) => ({ fitSerial: s.fitSerial + 1 })),
   setMarkStyle: (markStyle) => set({ markStyle }),
   cyclePencilTool: () =>

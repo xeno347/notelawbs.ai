@@ -1,4 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { randomString } from '../services/secureRandom';
+import { reportError } from '../services/errorReporting';
 
 export type CollabAccess = 'edit' | 'view';
 
@@ -35,19 +37,9 @@ export type RoomPolicy = {
   createdAt: number;
 };
 
-function randomToken(bytes = 12): string {
+function randomToken(chars = 22): string {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnopqrstuvwxyz';
-  let out = '';
-  const buf = new Uint8Array(bytes);
-  try {
-    const g = globalThis as { crypto?: { getRandomValues?: (a: Uint8Array) => Uint8Array } };
-    if (g.crypto?.getRandomValues) g.crypto.getRandomValues(buf);
-    else for (let i = 0; i < bytes; i++) buf[i] = Math.floor(Math.random() * 256);
-  } catch {
-    for (let i = 0; i < bytes; i++) buf[i] = Math.floor(Math.random() * 256);
-  }
-  for (let i = 0; i < bytes; i++) out += alphabet[buf[i] % alphabet.length];
-  return out;
+  return randomString(chars, alphabet);
 }
 
 export function mintInvite(roomId: string, access: CollabAccess, ttlMs = INVITE_TTL_MS): InvitePayload {
@@ -55,7 +47,7 @@ export function mintInvite(roomId: string, access: CollabAccess, ttlMs = INVITE_
     roomId: roomId.trim().toUpperCase(),
     access,
     exp: Date.now() + ttlMs,
-    token: randomToken(14),
+    token: randomToken(22),
   };
 }
 
@@ -92,8 +84,8 @@ export async function saveRoomPolicy(policy: RoomPolicy): Promise<void> {
   all[policy.roomId] = policy;
   try {
     await AsyncStorage.setItem(POLICY_KEY, JSON.stringify(all));
-  } catch {
-    /* noop */
+  } catch (e) {
+    reportError(e, { where: 'inviteTokens.saveRoomPolicy' }, 'warning');
   }
 }
 

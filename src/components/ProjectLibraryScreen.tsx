@@ -14,9 +14,7 @@ import { Plus, FileText, Trash2, Pencil, Settings as SettingsIcon } from 'lucide
 import { useStore } from '../store';
 import { getPalette, useTheme, RADIUS, TYPE, ELEVATION } from '../theme';
 import { useAuth } from '../auth/authStore';
-import { SoftGradient } from './ui';
-
-/** Projects home — card grid gallery (Freeform / Files style). */
+/** Projects home — flat Notion-style gallery. */
 export default function ProjectLibraryScreen({ onSettings }: { onSettings: () => void }) {
   const p = useTheme();
   const insets = useSafeAreaInsets();
@@ -72,11 +70,11 @@ export default function ProjectLibraryScreen({ onSettings }: { onSettings: () =>
           <View style={s.navRow}>
             <View style={{ flex: 1 }} />
             <TouchableOpacity style={s.settingsBtn} onPress={onSettings} activeOpacity={0.65}>
-              <SettingsIcon size={20} color={p.tint} strokeWidth={2} />
+              <SettingsIcon size={20} color={p.textMuted} strokeWidth={1.5} />
             </TouchableOpacity>
           </View>
 
-          <Text style={s.largeTitle}>Projects</Text>
+          <Text style={s.largeTitle}>NoteLawbs.Ai</Text>
           <Text style={s.greeting}>Welcome back, {displayName.split(' ')[0]}</Text>
 
           {/* New project */}
@@ -111,16 +109,14 @@ export default function ProjectLibraryScreen({ onSettings }: { onSettings: () =>
               </TouchableOpacity>
             </View>
 
-            {projects.map((proj, i) => {
-              const tone = [p.accent, '#6B7280', '#4A5568', p.accentAlt][i % 4];
+            {projects.map((proj) => {
               const renaming = renamingId === proj.id;
               return (
                 <View key={proj.id} style={{ width: cardW + gap, padding: gap / 2 }}>
                   <TouchableOpacity style={s.tile} onPress={() => !renaming && openProject(proj.id)} activeOpacity={0.9}>
-                    <View style={s.cover}>
-                      <SoftGradient from={tone} to={p.surface2} angle="diagonal" />
-                      <View style={[s.coverBadge, { backgroundColor: tone }]}>
-                        <FileText size={18} color="#fff" strokeWidth={2.2} />
+                    <View style={[s.cover, { backgroundColor: p.bg2 }]}>
+                      <View style={[s.coverBadge, { backgroundColor: p.fill }]}>
+                        <FileText size={18} color={p.textMid} strokeWidth={1.5} />
                       </View>
                     </View>
                     <View style={s.tileBody}>
@@ -208,20 +204,20 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       flexDirection: 'row',
       alignItems: 'center',
       gap: 6,
-      backgroundColor: p.tint,
-      borderRadius: RADIUS.sm,
-      paddingHorizontal: 16,
-      paddingVertical: 12,
+      backgroundColor: p.text,
+      borderRadius: RADIUS.md,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
     },
-    createText: { color: '#fff', fontWeight: '600', fontSize: 16 },
-    sectionLabel: { ...TYPE.footnote, color: p.textMid, marginBottom: 10, fontWeight: '600' },
+    createText: { color: '#fff', fontWeight: '500', fontSize: 14 },
+    sectionLabel: { ...TYPE.footnote, color: p.textMid, marginBottom: 10, fontWeight: '500' },
     grid: { flexDirection: 'row', flexWrap: 'wrap' },
     tile: {
-      backgroundColor: p.grouped,
+      backgroundColor: p.surface,
       borderRadius: RADIUS.lg,
       overflow: 'hidden',
       borderWidth: StyleSheet.hairlineWidth,
-      borderColor: p.separator,
+      borderColor: p.border,
       ...ELEVATION.card,
       minHeight: 210,
     },
@@ -229,33 +225,33 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       alignItems: 'center',
       justifyContent: 'center',
       borderStyle: 'dashed',
-      borderWidth: 1.5,
-      borderColor: p.separator,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: p.border,
       minHeight: 210,
       gap: 10,
     },
     newIcon: {
-      width: 52,
-      height: 52,
-      borderRadius: 14,
-      backgroundColor: p.tintSoft,
+      width: 44,
+      height: 44,
+      borderRadius: RADIUS.lg,
+      backgroundColor: p.hover,
       alignItems: 'center',
       justifyContent: 'center',
     },
-    cover: { height: 96, justifyContent: 'center' },
+    cover: { height: 88, justifyContent: 'center' },
     coverBadge: {
       position: 'absolute',
       left: 14,
       bottom: 12,
-      width: 36,
-      height: 36,
-      borderRadius: 10,
+      width: 32,
+      height: 32,
+      borderRadius: RADIUS.md,
       alignItems: 'center',
       justifyContent: 'center',
     },
-    tileBody: { padding: 14, gap: 4 },
-    tileTitle: { ...TYPE.headline, color: p.text, fontSize: 16 },
+    tileBody: { padding: 16, gap: 4 },
+    tileTitle: { ...TYPE.headline, color: p.text },
     tileMeta: { ...TYPE.caption1, color: p.textMid },
     tileActions: { flexDirection: 'row', gap: 14, marginTop: 8 },
-    renameInput: { ...TYPE.headline, color: p.text, padding: 0, fontSize: 16 },
+    renameInput: { ...TYPE.headline, color: p.text, padding: 0 },
   });

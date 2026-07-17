@@ -66,7 +66,7 @@ export default function ShareModal({ onClose }: { onClose: () => void }) {
     const label = access === 'view' ? 'view only' : 'can edit';
     const tokenLine = inviteToken ? `\nInvite token: ${inviteToken}` : '';
     await Share.share({
-      message: `Join my LitNotes Canvas workspace (${label}).\nRoom: ${roomId}${tokenLine}\n\n${shareLink}`,
+      message: `Join my NoteLawbs.Ai workspace (${label}).\nRoom: ${roomId}${tokenLine}\n\n${shareLink}`,
     }).catch(() => {});
   };
 

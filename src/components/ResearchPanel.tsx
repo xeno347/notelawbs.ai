@@ -11,9 +11,8 @@ import {
   Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BlurView } from '@react-native-community/blur';
 import { useStore } from '../store';
-import { getPalette, useTheme, SERIF, RADIUS, ELEVATION, glow } from '../theme';
+import { getPalette, useTheme, SERIF, RADIUS, ELEVATION } from '../theme';
 import {
   runResearch,
   getStoredKey,
@@ -110,9 +109,6 @@ export default function ResearchPanel({ onClose }: { onClose: () => void }) {
     <Modal animationType="slide" transparent onRequestClose={onClose}>
       <View style={s.backdrop}>
         <View style={s.panel}>
-          <BlurView style={StyleSheet.absoluteFill} blurType={p.blurType} blurAmount={26} reducedTransparencyFallbackColor={p.bg} />
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: p.glassTint }]} />
-
           <View style={[s.header, { paddingTop: insets.top + 18 }]}>
             <View>
               <Text style={s.title}>Legal research</Text>
@@ -249,7 +245,8 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       width: '86%',
       maxWidth: 440,
       overflow: 'hidden',
-      borderLeftWidth: 1,
+      backgroundColor: p.sidebar,
+      borderLeftWidth: StyleSheet.hairlineWidth,
       borderLeftColor: p.border,
       ...ELEVATION.panel,
     },
@@ -259,40 +256,38 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       justifyContent: 'space-between',
       paddingHorizontal: 18,
       paddingBottom: 14,
-      borderBottomWidth: 1,
+      borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: p.border,
     },
-    title: { fontSize: 22, fontWeight: '700', color: p.text },
+    title: { fontSize: 18, fontWeight: '600', color: p.text },
     badge: { alignSelf: 'flex-start', marginTop: 4, paddingHorizontal: 8, paddingVertical: 2, borderRadius: RADIUS.sm },
     badgeLive: { backgroundColor: p.successSoft },
     badgeOffline: { backgroundColor: p.warningSoft },
-    badgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 1 },
-    closeBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: RADIUS.sm, borderWidth: 1, borderColor: p.border },
+    badgeText: { fontSize: 10, fontWeight: '600', letterSpacing: 0.4 },
+    closeBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: RADIUS.md, borderWidth: StyleSheet.hairlineWidth, borderColor: p.border },
     closeText: { color: p.text, fontSize: 13 },
     body: { flex: 1 },
     bodyContent: { padding: 18 },
     queryInput: {
-      borderWidth: 1,
-      borderColor: p.borderStrong,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: p.border,
       borderRadius: RADIUS.md,
       padding: 12,
       minHeight: 76,
       color: p.text,
-      backgroundColor: p.surfaceGlass,
-      fontSize: 15,
-      fontFamily: SERIF,
+      backgroundColor: p.surface,
+      fontSize: 16,
       textAlignVertical: 'top',
       marginBottom: 10,
     },
     runBtn: {
-      backgroundColor: p.tint,
+      backgroundColor: p.text,
       borderRadius: RADIUS.md,
-      paddingVertical: 12,
+      paddingVertical: 10,
       alignItems: 'center',
       marginBottom: 16,
-      ...glow(p.tintSoft, 0.55),
     },
-    runText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+    runText: { color: '#fff', fontWeight: '500', fontSize: 14 },
     stages: { marginBottom: 16, gap: 10 },
     stageRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
     stageLabel: { fontSize: 13, color: p.textMuted },

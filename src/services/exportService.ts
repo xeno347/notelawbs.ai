@@ -74,10 +74,10 @@ export async function exportAnnotatedReport(params: {
 }): Promise<void> {
   const lines = [
     '<!DOCTYPE html><html><head><meta charset="utf-8"/>',
-    `<title>${esc(params.docName || 'LitNotes')} — Annotated report</title>`,
+    `<title>${esc(params.docName || 'NoteLawbs.Ai')} — Annotated report</title>`,
     '<style>body{font-family:Georgia,serif;max-width:720px;margin:32px auto;padding:0 20px;color:#1a1a1a}h1{font-size:22px}h2{font-size:15px;margin-top:28px;border-bottom:1px solid #ccc;padding-bottom:4px}.hl{margin:12px 0;padding:10px 12px;border-left:3px solid #c0392b;background:#faf6f2}.meta{font-size:12px;color:#666;margin-bottom:4px}.tag{display:inline-block;font-size:10px;padding:2px 6px;margin-right:4px;border-radius:4px;background:#eee}</style>',
     '</head><body>',
-    `<h1>${esc(params.docName || 'LitNotes Canvas')}</h1>`,
+    `<h1>${esc(params.docName || 'NoteLawbs.Ai')}</h1>`,
     `<p>Annotated report · ${params.highlights.length} marks · ${new Date().toLocaleString()}</p>`,
   ];
   for (const h of [...params.highlights].sort((a, b) => a.page - b.page)) {
@@ -133,7 +133,7 @@ export async function exportProjectBundle(bundle: ProjectBundle): Promise<void> 
 export async function parseProjectBundle(json: string): Promise<ProjectBundle> {
   const data = JSON.parse(json) as ProjectBundle;
   if (!data || data.version !== 1 || !Array.isArray(data.nodes)) {
-    throw new Error('Invalid LitNotes project file');
+    throw new Error('Invalid NoteLawbs.Ai project file');
   }
   return data;
 }
@@ -155,13 +155,18 @@ function buildMarkdown(params: {
   nodes: FlowNode[];
   bookmarks: Bookmark[];
   edges?: Edge[];
+  /** When set, only this group and its members are exported. */
+  groupId?: string;
 }): string {
-  const { docName, highlights, nodes, bookmarks, edges = [] } = params;
-  const lines: string[] = [`# ${docName || 'LitNotes Canvas export'}`, ''];
+  const { docName, highlights, nodes, bookmarks, edges = [], groupId } = params;
+  const lines: string[] = [`# ${docName || 'NoteLawbs.Ai export'}`, ''];
 
-  const sorted = [...nodes].sort((a, b) => a.y - b.y || a.x - b.x);
+  const scoped = groupId
+    ? nodes.filter((n) => n.id === groupId || n.groupId === groupId)
+    : nodes;
+  const sorted = [...scoped].sort((a, b) => a.y - b.y || a.x - b.x);
   if (sorted.length) {
-    lines.push('## Workspace outline', '');
+    lines.push(groupId ? '## Section export' : '## Workspace outline', '');
     for (const n of sorted) {
       if (n.type === 'group') {
         const g = n.data as GroupData;
@@ -169,7 +174,8 @@ function buildMarkdown(params: {
       } else if (n.type === 'note') {
         const d = n.data as NoteData;
         if (!d.text?.trim()) continue;
-        lines.push(`- **Note:** ${d.text.trim()}`, '');
+        const cite = d.page != null ? ` (p.${d.page})` : '';
+        lines.push(`- **Note:** ${d.text.trim()}${cite}`, '');
       } else if (n.type === 'excerpt') {
         const d = n.data as ExcerptData;
         const src = d.docName ? ` (${d.docName.replace(/\.pdf$/i, '')}, p.${d.page})` : ` (p.${d.page})`;
@@ -243,7 +249,7 @@ function buildWordHtml(params: {
     })
     .join('\n');
   return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"/><title>${esc(
-    params.docName || 'LitNotes',
+    params.docName || 'NoteLawbs.Ai',
   )}</title></head><body>${body}</body></html>`;
 }
 

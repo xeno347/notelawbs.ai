@@ -1,28 +1,43 @@
 import React from 'react';
-import { View, Text, Pressable, StyleSheet } from 'react-native';
-import { GitBranch, Search, BookMarked, Sparkles, Download, Share2, Settings } from 'lucide-react-native';
+import { View, Text, Pressable, StyleSheet, Image } from 'react-native';
+import {
+  GitBranch,
+  Search,
+  BookMarked,
+  Highlighter,
+  Sparkles,
+  Download,
+  Share2,
+  Settings,
+} from 'lucide-react-native';
 import { useStore } from '../store';
 import { useCollab } from '../collab/collabStore';
-import { useTheme, RADIUS, glow } from '../theme';
+import { useTheme, RADIUS, SIDEBAR_COMPACT_W, ICON_SIZE } from '../theme';
+
+const LOGO = require('../assets/notelawbs-logo.png');
 
 export default function NavRail({
   onSearch,
   onResearch,
   onBookmarks,
+  onAnnotations,
   onExport,
   onShare,
   onSettings,
   researchOpen,
   bookmarksOpen,
+  annotationsOpen,
 }: {
   onSearch: () => void;
   onResearch: () => void;
   onBookmarks: () => void;
+  onAnnotations: () => void;
   onExport: () => void;
   onShare: () => void;
   onSettings: () => void;
   researchOpen: boolean;
   bookmarksOpen: boolean;
+  annotationsOpen: boolean;
 }) {
   const p = useTheme();
   const threadsOn = useStore((s) => s.threadsOn);
@@ -30,13 +45,15 @@ export default function NavRail({
   const collabLive = useCollab((s) => s.status === 'live');
 
   return (
-    <View style={[styles.rail, { backgroundColor: p.surface, borderRightColor: p.border }]}>
+    <View style={[styles.rail, { backgroundColor: p.sidebar, borderRightColor: p.border }]}>
       <View style={styles.group}>
+        <Image source={LOGO} style={styles.logo} resizeMode="contain" accessibilityLabel="NoteLawbs.Ai" />
         <RailBtn icon={GitBranch} label="Threads" active={threadsOn} onPress={toggleThreads} p={p} />
         <RailBtn icon={Search} label="Search" onPress={onSearch} p={p} />
         <RailBtn icon={BookMarked} label="Index" active={bookmarksOpen} onPress={onBookmarks} p={p} />
-        <RailBtn icon={Sparkles} label="Research" active={researchOpen} onPress={onResearch} p={p} tint={p.ai} />
-        <RailBtn icon={Share2} label="Share" active={collabLive} onPress={onShare} p={p} tint={p.success} />
+        <RailBtn icon={Highlighter} label="Marks" active={annotationsOpen} onPress={onAnnotations} p={p} />
+        <RailBtn icon={Sparkles} label="Research" active={researchOpen} onPress={onResearch} p={p} />
+        <RailBtn icon={Share2} label="Share" active={collabLive} onPress={onShare} p={p} />
         <RailBtn icon={Download} label="Export" onPress={onExport} p={p} />
       </View>
       <View style={styles.group}>
@@ -52,33 +69,23 @@ function RailBtn({
   active,
   onPress,
   p,
-  tint,
 }: {
   icon: React.ComponentType<any>;
   label: string;
   active?: boolean;
   onPress: () => void;
   p: ReturnType<typeof useTheme>;
-  tint?: string;
 }) {
-  const accent = tint || p.accent;
   return (
     <Pressable
       accessibilityLabel={label}
       onPress={onPress}
       style={({ pressed }) => [
         styles.btn,
-        { transform: [{ scale: pressed ? 0.94 : 1 }] },
+        (active || pressed) && { backgroundColor: p.hover },
       ]}>
-      <View
-        style={[
-          styles.iconWrap,
-          active && { backgroundColor: p.accentSoft, borderColor: accent },
-          active && glow(accent, 0.25),
-        ]}>
-        <Icon size={20} color={active ? accent : p.textMid} strokeWidth={2.1} />
-      </View>
-      <Text style={[styles.label, { color: active ? accent : p.textMuted }]} numberOfLines={1}>
+      <Icon size={ICON_SIZE} color={active ? p.text : p.textMuted} strokeWidth={1.5} />
+      <Text style={[styles.label, { color: active ? p.text : p.textMuted }]} numberOfLines={1}>
         {label}
       </Text>
     </Pressable>
@@ -87,22 +94,20 @@ function RailBtn({
 
 const styles = StyleSheet.create({
   rail: {
-    width: 76,
-    borderRightWidth: 1,
-    paddingVertical: 12,
+    width: SIDEBAR_COMPACT_W,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 10,
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  group: { alignItems: 'center', gap: 6, width: '100%' },
-  btn: { alignItems: 'center', width: '100%', paddingVertical: 4, gap: 3 },
-  iconWrap: {
-    width: 46,
-    height: 40,
-    borderRadius: RADIUS.md,
-    borderWidth: 1,
-    borderColor: 'transparent',
+  logo: { width: 28, height: 28, marginBottom: 8 },
+  group: { alignItems: 'center', gap: 2, width: '100%', paddingHorizontal: 6 },
+  btn: {
     alignItems: 'center',
-    justifyContent: 'center',
+    width: '100%',
+    paddingVertical: 8,
+    gap: 2,
+    borderRadius: RADIUS.md,
   },
-  label: { fontSize: 10, fontWeight: '600', letterSpacing: 0.2 },
+  label: { fontSize: 9, fontWeight: '500' },
 });

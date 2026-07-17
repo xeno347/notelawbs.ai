@@ -13,8 +13,8 @@ type DragOpts = {
 /**
  * Local-offset drag for freeform canvas cards.
  * Updates React local state during the gesture (no store thrash);
- * commits a single `moveNode` on release so sibling cards do not re-render
- * on every touch-move.
+ * commits a single move on release. When the card is part of a multi-selection,
+ * every selected node moves together.
  */
 export function useFreeformDrag(opts: DragOpts): {
   panHandlers: GestureResponderHandlers;
@@ -27,14 +27,12 @@ export function useFreeformDrag(opts: DragOpts): {
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const startRef = useRef({ x: 0, y: 0 });
-  const childStarts = useRef<Array<{ id: string; x: number; y: number }>>([]);
+  const peerStarts = useRef<Array<{ id: string; x: number; y: number }>>([]);
   const offsetRef = useRef({ x: 0, y: 0 });
 
   const pan = useMemo(
     () =>
       PanResponder.create({
-        // Don't claim on touch-down — TextInputs / buttons inside cards need taps.
-        // Drag starts only after a clear move threshold.
         onStartShouldSetPanResponder: () => false,
         onMoveShouldSetPanResponder: (_e, g) =>
           g.numberActiveTouches === 1 && (Math.abs(g.dx) > 8 || Math.abs(g.dy) > 8),
@@ -46,13 +44,27 @@ export function useFreeformDrag(opts: DragOpts): {
           const state = useStore.getState();
           const n = state.nodes.find((x) => x.id === opts.nodeId);
           startRef.current = { x: n?.x ?? 0, y: n?.y ?? 0 };
-          if (opts.moveChildren && n) {
-            childStarts.current = state.nodes
+
+          const selected = state.selectedNodeIds;
+          const movingSelection = selected.includes(opts.nodeId) && selected.length > 1;
+
+          if (movingSelection) {
+            peerStarts.current = state.nodes
+              .filter((c) => selected.includes(c.id) && c.id !== opts.nodeId)
+              .map((c) => ({ id: c.id, x: c.x, y: c.y }));
+          } else if (opts.moveChildren && n) {
+            peerStarts.current = state.nodes
               .filter((c) => c.groupId === opts.nodeId)
               .map((c) => ({ id: c.id, x: c.x, y: c.y }));
           } else {
-            childStarts.current = [];
+            peerStarts.current = [];
           }
+
+          // Tap-drag on an unselected card becomes the sole selection.
+          if (!selected.includes(opts.nodeId)) {
+            state.setSelectedNodeIds([opts.nodeId]);
+          }
+
           offsetRef.current = { x: 0, y: 0 };
           setOffset({ x: 0, y: 0 });
           setDragging(true);
@@ -71,7 +83,7 @@ export function useFreeformDrag(opts: DragOpts): {
           const state = useStore.getState();
           const last = offsetRef.current;
           state.moveNode(opts.nodeId, startRef.current.x + last.x, startRef.current.y + last.y);
-          for (const c of childStarts.current) {
+          for (const c of peerStarts.current) {
             state.moveNode(c.id, c.x + last.x, c.y + last.y);
           }
           offsetRef.current = { x: 0, y: 0 };
@@ -79,6 +91,9 @@ export function useFreeformDrag(opts: DragOpts): {
           setDragging(false);
           state.setHoverNodeId(null);
           state.assignNodeGroupByPosition(opts.nodeId);
+          for (const c of peerStarts.current) {
+            state.assignNodeGroupByPosition(c.id);
+          }
           opts.onRelease?.();
         },
         onPanResponderTerminate: () => {

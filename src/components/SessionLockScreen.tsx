@@ -27,9 +27,7 @@ export default function SessionLockScreen() {
       <Aurora />
       <View style={styles.inner}>
         <BrandMark size={48} />
-        <Text style={[styles.brand, { color: p.text }]}>
-          LitNotes<Text style={{ color: p.textMuted }}> Canvas</Text>
-        </Text>
+        <Text style={[styles.brand, { color: p.text }]}>NoteLawbs.Ai</Text>
 
         <View style={[styles.card, { backgroundColor: p.surface, borderColor: p.border }, ELEVATION.panel]}>
           <View style={[styles.iconWrap, { backgroundColor: p.accentSoft }]}>

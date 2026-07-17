@@ -1,5 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Alert, Switch, useWindowDimensions } from 'react-native';
+import {
+  View,
+  Text,
+  TextInput,
+  StyleSheet,
+  ScrollView,
+  Pressable,
+  Alert,
+  Switch,
+  useWindowDimensions,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   X,
@@ -14,19 +24,28 @@ import {
   Lock,
   Camera,
   Mic,
+  Plus,
 } from 'lucide-react-native';
-import { useTheme, useThemeStore, useThemeMode, RADIUS, type ThemeMode } from '../theme';
+import {
+  useTheme,
+  useThemeStore,
+  useThemeMode,
+  RADIUS,
+  CATEGORIES,
+  CATEGORY_KEYS,
+  type ThemeMode,
+} from '../theme';
 import { useStore } from '../store';
 import { useAuth } from '../auth/authStore';
 import { useSessionLock } from '../auth/sessionLockStore';
 import { saveKey, clearKey } from '../research/service';
-import { getGroqKey, saveGroqKey, clearGroqKey } from '../services/aiClient';
+import { getGroqKey, saveGroqKey, clearGroqKey, migrateAiSecrets } from '../services/aiClient';
 import {
   getCloudOcrKey,
   saveCloudOcrKey,
   clearCloudOcrKey,
 } from '../services/cloudOcrService';
-import { getSetting } from '../storage';
+import { getSecret } from '../services/secureStore';
 import {
   getSupabaseOverrides,
   saveSupabaseOverrides,
@@ -91,6 +110,10 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
   const setAutoOcr = useStore((s) => s.setAutoOcr);
   const preferCloudOcr = useStore((s) => s.preferCloudOcr);
   const setPreferCloudOcr = useStore((s) => s.setPreferCloudOcr);
+  const customCategories = useStore((s) => s.customCategories);
+  const addCustomCategory = useStore((s) => s.addCustomCategory);
+  const removeCustomCategory = useStore((s) => s.removeCustomCategory);
+  const [newCategory, setNewCategory] = useState('');
 
   const [apiKey, setApiKey] = useState('');
   const [groqKey, setGroqKey] = useState('');
@@ -116,10 +139,12 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
     getCloudOcrKey().then((k) => {
       if (k) setCloudOcrKey(k);
     });
-    getSetting('anthropic_key').then((k) => {
+    (async () => {
+      await migrateAiSecrets();
+      const k = await getSecret('anthropic_key');
       if (k) setApiKey(k);
       setKeyLoaded(true);
-    });
+    })();
     (async () => {
       const entries = await Promise.all(
         PERMISSION_ITEMS.map(async (it) => [it.key, await checkPermission(it.key)] as const),
@@ -208,7 +233,7 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
     if (state === 'blocked') {
       Alert.alert(
         'Enable in Settings',
-        'This permission was previously denied. Turn it on for LitNotes Canvas in system Settings.',
+        'This permission was previously denied. Turn it on for NoteLawbs.Ai in system Settings.',
         [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Open Settings', onPress: () => openAppPermissionSettings() },
@@ -265,6 +290,113 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
                 Shortcuts: Text / Box select → Highlight to canvas · Pen draws with Finger on · Fit
                 frames all canvas cards · Index tap jumps to page.
               </Text>
+            </View>
+          </Section>
+
+          <Section title="Matter categories">
+            <View style={{ padding: 16, gap: 10 }}>
+              <Text style={[styles.hint, { color: p.textMuted }]}>
+                Built-in judgment tags plus custom labels for this project (contracts, depositions,
+                statutes, etc.). Custom categories appear in the highlight picker and multi-select
+                recolor bar.
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                {CATEGORY_KEYS.map((key) => (
+                  <View
+                    key={key}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                      paddingHorizontal: 10,
+                      paddingVertical: 5,
+                      borderRadius: RADIUS.md,
+                      backgroundColor: CATEGORIES[key].soft,
+                    }}>
+                    <View
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: 4,
+                        backgroundColor: CATEGORIES[key].color,
+                      }}
+                    />
+                    <Text style={{ fontSize: 12, fontWeight: '500', color: CATEGORIES[key].color }}>
+                      {CATEGORIES[key].label}
+                    </Text>
+                  </View>
+                ))}
+                {customCategories.map((c) => (
+                  <Pressable
+                    key={c.key}
+                    onLongPress={() =>
+                      Alert.alert('Remove category?', c.label, [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Remove', style: 'destructive', onPress: () => removeCustomCategory(c.key) },
+                      ])
+                    }
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                      paddingHorizontal: 10,
+                      paddingVertical: 5,
+                      borderRadius: RADIUS.md,
+                      backgroundColor: c.soft,
+                    }}>
+                    <View
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: 4,
+                        backgroundColor: c.color,
+                      }}
+                    />
+                    <Text style={{ fontSize: 12, fontWeight: '500', color: c.color }}>{c.label}</Text>
+                    <Text style={{ fontSize: 10, color: p.textMuted }}>hold to remove</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <TextInput
+                  value={newCategory}
+                  onChangeText={setNewCategory}
+                  placeholder="New category (e.g. Deposition)"
+                  placeholderTextColor={p.textMuted}
+                  style={{
+                    flex: 1,
+                    borderWidth: StyleSheet.hairlineWidth,
+                    borderColor: p.border,
+                    borderRadius: RADIUS.md,
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                    fontSize: 14,
+                    color: p.text,
+                    backgroundColor: p.bg,
+                  }}
+                  onSubmitEditing={() => {
+                    if (!newCategory.trim()) return;
+                    addCustomCategory(newCategory.trim());
+                    setNewCategory('');
+                  }}
+                />
+                <Pressable
+                  onPress={() => {
+                    if (!newCategory.trim()) return;
+                    addCustomCategory(newCategory.trim());
+                    setNewCategory('');
+                  }}
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: RADIUS.md,
+                    backgroundColor: p.text,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}>
+                  <Plus size={18} color="#fff" strokeWidth={2} />
+                </Pressable>
+              </View>
             </View>
           </Section>
 
@@ -567,7 +699,7 @@ export default function SettingsScreen({ onClose }: { onClose: () => void }) {
             <RowDivider />
             <View style={styles.row}>
               <Text style={[styles.rowSub, { color: p.textMuted, flex: 1 }]}>
-                LitNotes Canvas keeps your judgments, notes and research on-device. No data leaves
+                NoteLawbs.Ai keeps your judgments, notes and research on-device. No data leaves
                 this machine except AI research you explicitly run.
               </Text>
             </View>

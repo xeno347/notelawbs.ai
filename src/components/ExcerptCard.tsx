@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useCallback } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, PanResponder } from 'react-native';
-import { X, ChevronLeft } from 'lucide-react-native';
+import { X, ChevronLeft, ListTree } from 'lucide-react-native';
 import { useStore, type FlowNode, type ExcerptData } from '../store';
 import { catStyle, getPalette, useTheme, SERIF, RADIUS, ELEVATION } from '../theme';
 import { useFreeformDrag } from '../hooks/useFreeformDrag';
@@ -48,6 +48,9 @@ function ExcerptCard({
   const isSource = connectSource === node.id;
   const connecting = !!connectSource;
   const isFocused = useStore((s) => s.hoverNodeId === node.id);
+  const selected = useStore((s) => s.selectedNodeIds.includes(node.id));
+  const pullNodeToLinear = useStore((s) => s.pullNodeToLinear);
+  const setRightPaneMode = useStore((s) => s.setRightPaneMode);
   const width = node.w || CARD_WIDTH;
 
   const liveScale = () => Math.max(0.05, useStore.getState().canvasTf.s);
@@ -112,6 +115,7 @@ function ExcerptCard({
         heightStyle,
         isSource && s.cardSource,
         isFocused && s.cardFocus,
+        selected && s.cardSelected,
       ]}
       onLayout={(event) => {
         const { width: lw, height: lh } = event.nativeEvent.layout;
@@ -122,15 +126,26 @@ function ExcerptCard({
       <View style={[s.tint, { backgroundColor: cs.soft }]} pointerEvents="none" />
       <View style={s.inner} pointerEvents="box-none">
         <View style={s.topRow} pointerEvents="box-none">
-          <View style={[s.catBadge, { backgroundColor: cs.color }]}>
-            <Text style={s.catBadgeText}>{cs.label}</Text>
+          <View style={[s.catBadge, { backgroundColor: cs.soft }]}>
+            <Text style={[s.catBadgeText, { color: cs.color }]}>{cs.label}</Text>
           </View>
-          <TouchableOpacity
-            style={s.del}
-            onPress={() => removeNode(node.id)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <X size={14} color={p.textMuted} strokeWidth={2.2} />
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <TouchableOpacity
+              onPress={() => {
+                pullNodeToLinear(node.id);
+                setRightPaneMode('notes');
+              }}
+              hitSlop={8}
+              accessibilityLabel="Pull into outline">
+              <ListTree size={14} color={p.textMuted} strokeWidth={1.5} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={s.del}
+              onPress={() => removeNode(node.id)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <X size={14} color={p.textMuted} strokeWidth={1.5} />
+            </TouchableOpacity>
+          </View>
         </View>
 
         <Text style={[s.quote, node.h ? { flex: 1 } : null]} numberOfLines={node.h ? undefined : 8}>
@@ -186,27 +201,27 @@ const styles = (p: ReturnType<typeof getPalette>) =>
   StyleSheet.create({
     card: {
       position: 'absolute',
-      backgroundColor: p.grouped,
-      borderRadius: RADIUS.md,
+      backgroundColor: p.surface,
+      borderRadius: RADIUS.lg,
       overflow: 'hidden',
       borderWidth: StyleSheet.hairlineWidth,
-      borderColor: p.separator,
+      borderColor: p.border,
       ...ELEVATION.card,
       minHeight: 108,
     },
-    cardSource: { borderColor: p.tint, borderWidth: 2 },
+    cardSource: { borderColor: p.tint, borderWidth: StyleSheet.hairlineWidth },
     cardFocus: {
-      borderColor: p.iris,
-      borderWidth: 2,
-      shadowColor: p.iris,
-      shadowOpacity: 0.35,
-      shadowRadius: 14,
+      backgroundColor: p.hover,
+    },
+    cardSelected: {
+      borderColor: p.tint,
+      borderWidth: 1.5,
     },
     tint: {
       ...StyleSheet.absoluteFillObject,
-      opacity: 0.55,
+      opacity: 0.85,
     },
-    inner: { flex: 1, padding: 12, paddingBottom: 10 },
+    inner: { flex: 1, padding: 16, paddingBottom: 12 },
     topRow: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -216,26 +231,26 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     catBadge: {
       paddingHorizontal: 8,
       paddingVertical: 3,
-      borderRadius: RADIUS.pill,
+      borderRadius: RADIUS.sm,
     },
-    catBadgeText: { color: '#fff', fontSize: 9.5, fontWeight: '800', letterSpacing: 0.4 },
+    catBadgeText: { fontSize: 11, fontWeight: '500' },
     del: { padding: 2 },
     quote: {
       fontFamily: SERIF,
-      fontSize: 13.5,
-      lineHeight: 20,
+      fontSize: 15,
+      lineHeight: 22,
       color: p.text,
       marginBottom: 8,
     },
     original: {
-      fontSize: 11,
-      lineHeight: 15,
+      fontSize: 12,
+      lineHeight: 16,
       color: p.textMuted,
       marginBottom: 8,
       fontStyle: 'italic',
     },
     note: {
-      fontSize: 11.5,
+      fontSize: 13,
       fontStyle: 'italic',
       color: p.textMuted,
       marginBottom: 8,
@@ -249,21 +264,21 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     sourceBadge: {
       width: 20,
       height: 20,
-      borderRadius: 10,
+      borderRadius: RADIUS.sm,
       alignItems: 'center',
       justifyContent: 'center',
     },
     trustBadge: {
       fontSize: 10,
-      fontWeight: '800',
-      letterSpacing: 0.3,
+      fontWeight: '500',
+      letterSpacing: 0.2,
       textTransform: 'uppercase',
     },
     sourceText: {
       flex: 1,
-      fontSize: 11,
-      color: p.iris,
-      fontWeight: '600',
+      fontSize: 12,
+      color: p.textMid,
+      fontWeight: '500',
     },
     resizeHit: {
       position: 'absolute',
@@ -279,8 +294,8 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     resizeGrip: {
       width: 12,
       height: 12,
-      borderRightWidth: 2.5,
-      borderBottomWidth: 2.5,
+      borderRightWidth: 1.5,
+      borderBottomWidth: 1.5,
       borderBottomRightRadius: 2,
     },
   });

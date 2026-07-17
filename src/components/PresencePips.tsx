@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { useTheme, RADIUS } from '../theme';
+import { useTheme } from '../theme';
 import { useCollab } from '../collab/collabStore';
 
 function initials(name: string): string {
@@ -19,23 +19,21 @@ export default function PresencePips({ max = 4 }: { max?: number }) {
   const extra = list.length - shown.length;
 
   return (
-    <View style={[styles.wrap, { borderColor: p.glassBorder, backgroundColor: 'rgba(255,255,255,0.06)' }]}>
-      <View style={[styles.liveDot, { backgroundColor: p.success }]} />
-      <Text style={[styles.liveText, { color: p.topbarText }]}>Live</Text>
+    <View style={styles.wrap}>
       <View style={styles.avatars}>
-        <Avatar label={initials(selfName || 'You')} color={p.accent} you />
+        <Avatar label={initials(selfName || 'You')} color={p.tint} border={p.bg} />
         {shown.map((peer) => (
-          <Avatar key={peer.id} label={initials(peer.name)} color={peer.color} />
+          <Avatar key={peer.id} label={initials(peer.name)} color={peer.color} border={p.bg} />
         ))}
-        {extra > 0 && <Avatar label={`+${extra}`} color={p.textMuted} />}
+        {extra > 0 && <Avatar label={`+${extra}`} color={p.textMuted} border={p.bg} />}
       </View>
     </View>
   );
 }
 
-function Avatar({ label, color, you }: { label: string; color: string; you?: boolean }) {
+function Avatar({ label, color, border }: { label: string; color: string; border: string }) {
   return (
-    <View style={[styles.avatar, { backgroundColor: color, borderColor: you ? '#fff' : 'rgba(0,0,0,0.15)' }]}>
+    <View style={[styles.avatar, { backgroundColor: color, borderColor: border }]}>
       <Text style={styles.avatarText}>{label}</Text>
     </View>
   );
@@ -45,23 +43,17 @@ const styles = StyleSheet.create({
   wrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: RADIUS.pill,
-    borderWidth: 1,
+    paddingHorizontal: 2,
   },
-  liveDot: { width: 7, height: 7, borderRadius: 4 },
-  liveText: { fontSize: 11, fontWeight: '700' },
-  avatars: { flexDirection: 'row', marginLeft: 2 },
+  avatars: { flexDirection: 'row', paddingLeft: 8 },
   avatar: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1.5,
-    marginLeft: -6,
+    marginLeft: -8,
   },
-  avatarText: { color: '#fff', fontSize: 9.5, fontWeight: '800' },
+  avatarText: { color: '#fff', fontSize: 9, fontWeight: '600' },
 });

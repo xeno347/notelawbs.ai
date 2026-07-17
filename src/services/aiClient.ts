@@ -1,8 +1,9 @@
 /**
  * Unified AI client — Groq (preferred when configured) or Anthropic.
- * Keys: Settings → AI, or fill aiConfig.local.ts (from aiConfig.local.example.ts).
+ * Keys: Settings → AI (Keychain), or fill aiConfig.local.ts.
  */
 import { getSetting, setSetting } from '../storage';
+import { getSecret, setSecret, migrateSettingToSecret } from './secureStore';
 // Static import — Metro cannot optional-require a missing file (resolves to
 // undefined and throws "Requiring unknown module \"undefined\"" at runtime).
 import { GROQ_API_KEY as LOCAL_GROQ_API_KEY } from './aiConfig.local';
@@ -25,17 +26,40 @@ const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6';
 
 const localGroqKey = (LOCAL_GROQ_API_KEY || '').trim();
 
+let secretsMigrated = false;
+
+/** Move any plaintext settings keys into Keychain (idempotent). */
+export async function migrateAiSecrets(): Promise<void> {
+  if (secretsMigrated) return;
+  secretsMigrated = true;
+  await migrateSettingToSecret(
+    GROQ_KEY_SETTING,
+    getSetting,
+    async (k) => setSetting(k, ''),
+    GROQ_KEY_SETTING,
+  );
+  await migrateSettingToSecret(
+    ANTHROPIC_KEY_SETTING,
+    getSetting,
+    async (k) => setSetting(k, ''),
+    ANTHROPIC_KEY_SETTING,
+  );
+}
+
 export async function getGroqKey(): Promise<string | null> {
-  const stored = await getSetting(GROQ_KEY_SETTING);
+  await migrateAiSecrets();
+  const stored = await getSecret(GROQ_KEY_SETTING);
   if (stored?.trim()) return stored.trim();
   return localGroqKey || null;
 }
 
 export async function saveGroqKey(key: string): Promise<void> {
-  await setSetting(GROQ_KEY_SETTING, key.trim());
+  await setSecret(GROQ_KEY_SETTING, key.trim());
+  await setSetting(GROQ_KEY_SETTING, '');
 }
 
 export async function clearGroqKey(): Promise<void> {
+  await setSecret(GROQ_KEY_SETTING, '');
   await setSetting(GROQ_KEY_SETTING, '');
 }
 
@@ -45,7 +69,8 @@ export async function getAiCredentials(): Promise<AiCredentials | null> {
     const model = (await getSetting(GROQ_MODEL_SETTING)) || DEFAULT_GROQ_MODEL;
     return { provider: 'groq', key: groq, model };
   }
-  const anthropic = await getSetting(ANTHROPIC_KEY_SETTING);
+  await migrateAiSecrets();
+  const anthropic = await getSecret(ANTHROPIC_KEY_SETTING);
   if (anthropic?.trim()) {
     const model = (await getSetting(ANTHROPIC_MODEL_SETTING)) || DEFAULT_ANTHROPIC_MODEL;
     return { provider: 'anthropic', key: anthropic.trim(), model };
@@ -126,9 +151,11 @@ export async function getStoredKey(): Promise<string | null> {
 }
 
 export async function saveKey(key: string): Promise<void> {
-  await setSetting(ANTHROPIC_KEY_SETTING, key.trim());
+  await setSecret(ANTHROPIC_KEY_SETTING, key.trim());
+  await setSetting(ANTHROPIC_KEY_SETTING, '');
 }
 
 export async function clearKey(): Promise<void> {
+  await setSecret(ANTHROPIC_KEY_SETTING, '');
   await setSetting(ANTHROPIC_KEY_SETTING, '');
 }

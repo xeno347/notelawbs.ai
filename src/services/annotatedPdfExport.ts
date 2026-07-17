@@ -2,7 +2,7 @@ import ReactNativeBlobUtil from 'react-native-blob-util';
 import Share from 'react-native-share';
 import { PDFDocument, rgb, degrees } from 'pdf-lib';
 import type { Highlight, MarkStyle, Stroke } from '../store';
-import { CATEGORIES, type CategoryKey } from '../theme';
+import { catStyle } from '../theme';
 
 function withFilePrefix(path: string): string {
   return path.startsWith('file://') ? path : `file://${path}`;
@@ -12,31 +12,36 @@ function safeName(name: string): string {
   return (name || 'litnotes').replace(/[^\w.\-]+/g, '_').slice(0, 80);
 }
 
-function parseRgba(soft: string): { r: number; g: number; b: number; a: number } {
-  const m = soft.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
-  if (!m) return { r: 0.85, g: 0.7, b: 0.2, a: 0.35 };
-  return {
-    r: Number(m[1]) / 255,
-    g: Number(m[2]) / 255,
-    b: Number(m[3]) / 255,
-    a: m[4] != null ? Number(m[4]) : 0.35,
-  };
+function parseColor(soft: string, alpha = 0.35): { r: number; g: number; b: number; a: number } {
+  const rgba = soft.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+  if (rgba) {
+    return {
+      r: Number(rgba[1]) / 255,
+      g: Number(rgba[2]) / 255,
+      b: Number(rgba[3]) / 255,
+      a: rgba[4] != null ? Number(rgba[4]) : alpha,
+    };
+  }
+  const hex = soft.replace('#', '');
+  if (/^[0-9a-fA-F]{6}$/.test(hex)) {
+    const n = parseInt(hex, 16);
+    return {
+      r: ((n >> 16) & 255) / 255,
+      g: ((n >> 8) & 255) / 255,
+      b: (n & 255) / 255,
+      a: alpha,
+    };
+  }
+  return { r: 0.85, g: 0.7, b: 0.2, a: alpha };
 }
 
 function categoryRgb(key: string) {
-  const cat = CATEGORIES[(key as CategoryKey) in CATEGORIES ? (key as CategoryKey) : 'key_fact'];
-  return parseRgba(cat.soft);
+  return parseColor(catStyle(key).soft, 0.35);
 }
 
 function solidRgb(key: string) {
-  const cat = CATEGORIES[(key as CategoryKey) in CATEGORIES ? (key as CategoryKey) : 'key_fact'];
-  const hex = cat.color.replace('#', '');
-  const n = parseInt(hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex, 16);
-  return {
-    r: ((n >> 16) & 255) / 255,
-    g: ((n >> 8) & 255) / 255,
-    b: (n & 255) / 255,
-  };
+  const { r, g, b } = parseColor(catStyle(key).color, 1);
+  return { r, g, b };
 }
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -158,7 +163,7 @@ export async function exportAnnotatedPdf(params: {
   // Cover stamp so recipients know marks are baked in
   if (pages[0]) {
     const { width, height } = pages[0].getSize();
-    pages[0].drawText('LitNotes · annotated export', {
+    pages[0].drawText('NoteLawbs.Ai · annotated export', {
       x: 24,
       y: height - 18,
       size: 8,

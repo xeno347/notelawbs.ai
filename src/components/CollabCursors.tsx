@@ -4,9 +4,7 @@ import { MousePointer2 } from 'lucide-react-native';
 import { useCollab } from '../collab/collabStore';
 
 /**
- * Renders peer cursors inside the transformed canvas board. Coordinates are in
- * board/world space; we inverse-scale each cursor so it stays a constant size
- * regardless of the local zoom level.
+ * Peer cursors — thin pointer + small name pill (Notion/Figma style).
  */
 export default function CollabCursors({ scale }: { scale: number }) {
   const peers = useCollab((s) => s.peers);
@@ -28,9 +26,8 @@ export default function CollabCursors({ scale }: { scale: number }) {
               left: peer.x,
               top: peer.y,
               transform: [{ scale: inv }],
-              // Keep cursor tip pinned without Reanimated transformOrigin.
             }}>
-            <MousePointer2 size={20} color={peer.color} fill={peer.color} strokeWidth={1.4} />
+            <MousePointer2 size={16} color={peer.color} fill={peer.color} strokeWidth={1.2} />
             <View style={[styles.tag, { backgroundColor: peer.color }]}>
               <Text style={styles.tagText} numberOfLines={1}>
                 {peer.name}
@@ -45,12 +42,12 @@ export default function CollabCursors({ scale }: { scale: number }) {
 
 const styles = StyleSheet.create({
   tag: {
-    marginTop: 2,
-    marginLeft: 10,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 8,
+    marginTop: 0,
+    marginLeft: 12,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
     maxWidth: 120,
   },
-  tagText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  tagText: { color: '#fff', fontSize: 11, fontWeight: '500' },
 });

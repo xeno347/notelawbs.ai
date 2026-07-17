@@ -1,19 +1,19 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Animated, Easing } from 'react-native';
-import { useTheme, SERIF } from '../theme';
-import { Aurora, BrandMark } from './ui';
+import { useTheme, TYPE } from '../theme';
+import { BrandMark } from './ui';
 
 export default function SplashScreen() {
   const p = useTheme();
   const fade = useRef(new Animated.Value(0)).current;
-  const rise = useRef(new Animated.Value(12)).current;
+  const rise = useRef(new Animated.Value(8)).current;
 
   useEffect(() => {
     Animated.parallel([
-      Animated.timing(fade, { toValue: 1, duration: 520, useNativeDriver: true }),
+      Animated.timing(fade, { toValue: 1, duration: 280, useNativeDriver: true }),
       Animated.timing(rise, {
         toValue: 0,
-        duration: 620,
+        duration: 280,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
@@ -22,12 +22,9 @@ export default function SplashScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: p.bg }]}>
-      <Aurora />
       <Animated.View style={{ opacity: fade, transform: [{ translateY: rise }], alignItems: 'center' }}>
-        <BrandMark size={64} />
-        <Text style={[styles.brand, { color: p.text }]}>
-          LitNotes<Text style={{ color: p.textMuted }}> Canvas</Text>
-        </Text>
+        <BrandMark size={88} />
+        <Text style={[styles.brand, { color: p.text }]}>NoteLawbs.Ai</Text>
         <Text style={[styles.tag, { color: p.textMid }]}>Highlight. Connect. Reason.</Text>
       </Animated.View>
       <View style={styles.footer}>
@@ -39,8 +36,8 @@ export default function SplashScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  brand: { fontSize: 30, fontWeight: '800', letterSpacing: 0.2, marginTop: 18 },
-  tag: { fontSize: 15, marginTop: 8, fontFamily: SERIF, fontStyle: 'italic' },
+  brand: { ...TYPE.title2, marginTop: 16 },
+  tag: { ...TYPE.callout, marginTop: 6 },
   footer: { position: 'absolute', bottom: 44 },
-  footerText: { fontSize: 12.5, letterSpacing: 0.3 },
+  footerText: { ...TYPE.caption1 },
 });

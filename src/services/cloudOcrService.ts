@@ -8,6 +8,7 @@
  */
 import { getSetting, setSetting } from '../storage';
 import { CLOUD_OCR_API_KEY as LOCAL_CLOUD_OCR_KEY } from './aiConfig.local';
+import { getSecret, setSecret, migrateSettingToSecret } from './secureStore';
 import type { OcrBlock, OcrLine, OcrPageData, OcrQuality, OcrRect } from './ocrService';
 
 const CLOUD_OCR_KEY_SETTING = 'cloud_ocr_key';
@@ -15,18 +16,33 @@ const CLOUD_OCR_ENABLED_SETTING = 'cloud_ocr_enabled';
 const OCR_SPACE_URL = 'https://api.ocr.space/parse/image';
 
 const localCloudKey = (LOCAL_CLOUD_OCR_KEY || '').trim();
+let cloudKeyMigrated = false;
+
+async function ensureCloudKeyMigrated(): Promise<void> {
+  if (cloudKeyMigrated) return;
+  cloudKeyMigrated = true;
+  await migrateSettingToSecret(
+    CLOUD_OCR_KEY_SETTING,
+    getSetting,
+    async (k) => setSetting(k, ''),
+    CLOUD_OCR_KEY_SETTING,
+  );
+}
 
 export async function getCloudOcrKey(): Promise<string | null> {
-  const stored = await getSetting(CLOUD_OCR_KEY_SETTING);
+  await ensureCloudKeyMigrated();
+  const stored = await getSecret(CLOUD_OCR_KEY_SETTING);
   if (stored?.trim()) return stored.trim();
   return localCloudKey || null;
 }
 
 export async function saveCloudOcrKey(key: string): Promise<void> {
-  await setSetting(CLOUD_OCR_KEY_SETTING, key.trim());
+  await setSecret(CLOUD_OCR_KEY_SETTING, key.trim());
+  await setSetting(CLOUD_OCR_KEY_SETTING, '');
 }
 
 export async function clearCloudOcrKey(): Promise<void> {
+  await setSecret(CLOUD_OCR_KEY_SETTING, '');
   await setSetting(CLOUD_OCR_KEY_SETTING, '');
 }
 

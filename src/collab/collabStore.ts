@@ -14,6 +14,7 @@ import {
   saveRoomPolicy,
   type InvitePayload,
 } from './inviteTokens';
+import { randomString } from '../services/secureRandom';
 
 export type CollabRole = 'owner' | 'editor' | 'viewer';
 export type CollabAccess = import('./inviteTokens').CollabAccess;
@@ -37,11 +38,8 @@ function colorFor(id: string): string {
   return PEER_COLORS[h % PEER_COLORS.length];
 }
 
-function shortId(len = 6): string {
-  const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let s = '';
-  for (let i = 0; i < len; i++) s += abc[Math.floor(Math.random() * abc.length)];
-  return s;
+function shortId(len = 10): string {
+  return randomString(len, 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789');
 }
 
 export const JOIN_URL_PREFIX = 'litnotes://join/';
@@ -253,7 +251,9 @@ export const useCollab = create<CollabState>((set, get) => ({
   inviteExp: null,
 
   startShare: async (access = 'edit') => {
-    const roomId = shortId(6);
+    // ~50 bits of entropy (10 chars × 32-symbol alphabet) — not a substitute for
+    // Realtime Authorization / RLS, but far harder to brute-force than 6 chars.
+    const roomId = shortId(10);
     const invite = mintInvite(roomId, access);
     await saveRoomPolicy({
       roomId,
@@ -276,8 +276,10 @@ export const useCollab = create<CollabState>((set, get) => ({
       set({ status: 'error', error: 'Enter a room code or paste an invite link.' });
       return;
     }
-    // Legacy code-only join — role is self-selected.
-    await connect(roomId, access === 'view' ? 'viewer' : 'editor', access, null);
+    // Code-only join cannot self-elevate: viewer until a tokenized invite proves edit access.
+    // Full server-side gating still requires Supabase Realtime Authorization / RLS.
+    void access;
+    await connect(roomId, 'viewer', 'view', null);
   },
 
   joinInvite: async (invite) => {
@@ -286,8 +288,8 @@ export const useCollab = create<CollabState>((set, get) => ({
       return;
     }
     if (!invite.token) {
-      // Legacy link without token
-      await connect(invite.roomId, invite.access === 'view' ? 'viewer' : 'editor', invite.access, invite);
+      // Legacy link without token — cannot self-elevate to editor.
+      await connect(invite.roomId, 'viewer', 'view', invite);
       return;
     }
     const access = roleFromInvite(invite);

@@ -1,11 +1,10 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Search, Sparkles, Link2, MoreHorizontal, ChevronLeft } from 'lucide-react-native';
+import { Search, MessageSquare, MoreHorizontal, ChevronLeft, FileText } from 'lucide-react-native';
 import { useStore } from '../store';
 import { useCollab } from '../collab/collabStore';
-import { getPalette, useTheme, RADIUS, TYPE, SANS } from '../theme';
-import { GlassView } from './ui';
+import { getPalette, useTheme, RADIUS, TYPE, ICON_SIZE } from '../theme';
 import PresencePips from './PresencePips';
 
 export default function TopBar({
@@ -44,7 +43,8 @@ export default function TopBar({
   const docName = useStore((s) => s.docName);
   const collabLive = useCollab((c) => c.status === 'live');
   const s = styles(p);
-  const title = projectTitle || (docName ? docName.replace(/\.pdf$/i, '') : 'Untitled');
+  const project = projectTitle || 'Project';
+  const document = docName ? docName.replace(/\.pdf$/i, '') : 'Untitled';
 
   const openMore = () => {
     const buttons: Array<{ text: string; onPress?: () => void; style?: 'cancel' | 'destructive' }> = [
@@ -61,7 +61,7 @@ export default function TopBar({
   };
 
   return (
-    <GlassView style={{ zIndex: 100, paddingTop: insets.top }}>
+    <View style={{ zIndex: 100, paddingTop: insets.top, backgroundColor: p.bg }}>
       <View style={s.row}>
         <TouchableOpacity
           accessibilityLabel="Projects"
@@ -69,13 +69,17 @@ export default function TopBar({
           activeOpacity={0.65}
           style={s.backBtn}
           hitSlop={8}>
-          <ChevronLeft size={22} color={p.tint} strokeWidth={2.2} />
-          <Text style={[s.backText, { color: p.tint }]}>Projects</Text>
+          <ChevronLeft size={20} color={p.textMid} strokeWidth={1.5} />
         </TouchableOpacity>
 
-        <View style={s.center}>
-          <Text style={s.title} numberOfLines={1}>
-            {title}
+        <View style={s.crumb}>
+          <FileText size={ICON_SIZE} color={p.textMuted} strokeWidth={1.5} />
+          <Text style={s.crumbMuted} numberOfLines={1}>
+            {project}
+          </Text>
+          <Text style={s.crumbSep}>/</Text>
+          <Text style={s.crumbTitle} numberOfLines={1}>
+            {document}
           </Text>
         </View>
 
@@ -85,39 +89,25 @@ export default function TopBar({
               <PresencePips />
             </TouchableOpacity>
           ) : null}
+          <IconBtn icon={Search} label="Search" onPress={onSearch} p={p} />
           <IconBtn
-            icon={Search}
-            label="Search"
-            onPress={onSearch}
-            p={p}
-          />
-          <IconBtn
-            icon={Link2}
+            icon={MessageSquare}
             label="Threads"
             onPress={toggleThreads}
             p={p}
             active={threadsOn}
-            tone={p.iris}
-          />
-          <IconBtn
-            icon={Sparkles}
-            label="Research"
-            onPress={onResearch}
-            p={p}
-            active={researchOpen}
-            tone={p.ai}
           />
           <IconBtn
             icon={MoreHorizontal}
             label="More"
             onPress={openMore}
             p={p}
-            active={bookmarksOpen || !!annotationsOpen}
+            active={bookmarksOpen || !!annotationsOpen || researchOpen}
           />
         </View>
       </View>
       <View style={[s.hairline, { backgroundColor: p.separator }]} />
-    </GlassView>
+    </View>
   );
 }
 
@@ -127,24 +117,23 @@ function IconBtn({
   label,
   p,
   active,
-  tone,
 }: {
   icon: React.ComponentType<any>;
   onPress: () => void;
   label: string;
   p: ReturnType<typeof getPalette>;
   active?: boolean;
-  tone?: string;
 }) {
-  const color = active ? tone || p.tint : p.textMid;
   return (
-    <TouchableOpacity
+    <Pressable
       accessibilityLabel={label}
       onPress={onPress}
-      activeOpacity={0.65}
-      style={[styles(p).iconBtn, active && { backgroundColor: (tone || p.tint) + '18' }]}>
-      <Icon size={20} color={color} strokeWidth={2} />
-    </TouchableOpacity>
+      style={({ pressed }) => [
+        styles(p).iconBtn,
+        (pressed || active) && { backgroundColor: p.hover },
+      ]}>
+      <Icon size={ICON_SIZE} color={active ? p.text : p.textMuted} strokeWidth={1.5} />
+    </Pressable>
   );
 }
 
@@ -153,33 +142,46 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     row: {
       flexDirection: 'row',
       alignItems: 'center',
-      paddingHorizontal: 10,
-      paddingVertical: 6,
-      minHeight: 48,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      minHeight: 44,
       gap: 4,
     },
     backBtn: {
+      width: 32,
+      height: 32,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderRadius: RADIUS.md,
+    },
+    crumb: {
+      flex: 1,
       flexDirection: 'row',
       alignItems: 'center',
-      marginLeft: -4,
-      paddingRight: 4,
-      maxWidth: 110,
+      gap: 6,
+      minWidth: 0,
+      paddingHorizontal: 4,
     },
-    center: { flex: 1, alignItems: 'center', paddingHorizontal: 6, minWidth: 0 },
-    trailing: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-    backText: { fontSize: 17, fontWeight: '400', fontFamily: SANS, marginLeft: -2 },
-    title: {
-      ...TYPE.headline,
-      fontSize: 17,
-      fontWeight: '600',
+    crumbMuted: {
+      ...TYPE.subhead,
+      color: p.textMid,
+      flexShrink: 1,
+    },
+    crumbSep: {
+      ...TYPE.subhead,
+      color: p.textMuted,
+    },
+    crumbTitle: {
+      ...TYPE.subhead,
+      fontWeight: '500',
       color: p.text,
-      textAlign: 'center',
-      letterSpacing: -0.3,
+      flexShrink: 1,
     },
+    trailing: { flexDirection: 'row', alignItems: 'center', gap: 0 },
     iconBtn: {
-      width: 40,
-      height: 36,
-      borderRadius: RADIUS.sm,
+      width: 32,
+      height: 32,
+      borderRadius: RADIUS.md,
       alignItems: 'center',
       justifyContent: 'center',
     },

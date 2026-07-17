@@ -205,7 +205,8 @@ function classify(text: string): CategoryKey {
 }
 
 function validCategory(value: string | undefined): value is CategoryKey {
-  return ['key_fact', 'adverse', 'favorable', 'procedural', 'ratio'].includes(value || '');
+  // Accept built-ins and any non-empty custom matter key the model (or user) returns.
+  return typeof value === 'string' && value.trim().length > 0 && value.length < 64;
 }
 
 function localReason(text: string): string {

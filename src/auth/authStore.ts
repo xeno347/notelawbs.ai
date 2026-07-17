@@ -19,6 +19,13 @@ import {
   getCloudUser,
   onCloudAuthChange,
 } from './cloudAuth';
+import { useSessionLock } from './sessionLockStore';
+
+/**
+ * Temporary: skip AuthScreen / permissions and open the workspace as a local guest.
+ * Set to `false` when Google/cloud auth is stable again.
+ */
+export const AUTH_DISABLED = true;
 
 type AuthStatus = 'loading' | 'unauthenticated' | 'authenticated';
 
@@ -67,6 +74,27 @@ export const useAuth = create<AuthStore>((set, get) => ({
   permissionsHandled: false,
 
   init: async () => {
+    if (AUTH_DISABLED) {
+      const guest: AuthUser = {
+        id: 'local-guest',
+        email: 'guest@local',
+        displayName: 'Guest',
+        createdAt: Date.now(),
+      };
+      setWorkspaceScope(guest.id);
+      useSessionLock.getState().unlock();
+      void useSessionLock.getState().setEnabled(false);
+      set({
+        status: 'authenticated',
+        user: guest,
+        cloud: false,
+        permissionsHandled: true,
+        submitting: false,
+        error: null,
+      });
+      return;
+    }
+
     await loadSupabaseOverrides();
 
     if (isSupabaseConfigured()) {
@@ -76,8 +104,20 @@ export const useAuth = create<AuthStore>((set, get) => ({
         onCloudAuthChange((user) => {
           if (user) {
             setWorkspaceScope(user.id);
-            const already = get().status === 'authenticated' && get().user?.id === user.id;
-            set({ status: 'authenticated', user, cloud: true, permissionsHandled: already ? get().permissionsHandled : true });
+            // Keep an in-flight email/password sign-in's permissions flag; SSO / cold start → home.
+            const keepPerms =
+              get().status === 'authenticated' && get().user?.id === user.id
+                ? get().permissionsHandled
+                : true;
+            useSessionLock.getState().unlock();
+            set({
+              status: 'authenticated',
+              user,
+              cloud: true,
+              permissionsHandled: keepPerms,
+              submitting: false,
+              error: null,
+            });
           } else if (get().cloud) {
             setWorkspaceScope(null);
             set({ status: 'unauthenticated', user: null, cloud: false, permissionsHandled: false });
@@ -184,7 +224,7 @@ export const useAuth = create<AuthStore>((set, get) => ({
       }
       const res = await withTimeout(
         cloudSignInWithGoogle(),
-        60000,
+        130000,
         { ok: false as const, error: 'Google sign-in timed out.' },
       );
       if (!res.ok) {
@@ -192,7 +232,17 @@ export const useAuth = create<AuthStore>((set, get) => ({
         return false;
       }
       setWorkspaceScope(res.user.id);
-      set({ submitting: false, status: 'authenticated', user: res.user, cloud: true, permissionsHandled: false });
+      // SSO returns from a system sheet that backgrounds the app — clear any lock and
+      // skip the one-time permissions gate so the workspace opens immediately.
+      useSessionLock.getState().unlock();
+      set({
+        submitting: false,
+        status: 'authenticated',
+        user: res.user,
+        cloud: true,
+        permissionsHandled: true,
+        error: null,
+      });
       return true;
     } catch (e: any) {
       set({ submitting: false, error: e?.message || 'Google sign-in failed.' });
@@ -221,7 +271,15 @@ export const useAuth = create<AuthStore>((set, get) => ({
         return false;
       }
       setWorkspaceScope(res.user.id);
-      set({ submitting: false, status: 'authenticated', user: res.user, cloud: true, permissionsHandled: false });
+      useSessionLock.getState().unlock();
+      set({
+        submitting: false,
+        status: 'authenticated',
+        user: res.user,
+        cloud: true,
+        permissionsHandled: true,
+        error: null,
+      });
       return true;
     } catch (e: any) {
       set({ submitting: false, error: e?.message || 'Apple sign-in failed.' });

@@ -1,7 +1,7 @@
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import { Eye, Radio, Loader } from 'lucide-react-native';
-import { useTheme } from '../theme';
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, Pressable } from 'react-native';
+import { Eye, Radio, Loader, X } from 'lucide-react-native';
+import { useTheme, ICON_SIZE } from '../theme';
 import { useCollab } from '../collab/collabStore';
 
 export default function CollabBanner() {
@@ -9,8 +9,9 @@ export default function CollabBanner() {
   const status = useCollab((s) => s.status);
   const role = useCollab((s) => s.role);
   const peerCount = useCollab((s) => Object.keys(s.peers).length);
+  const [dismissed, setDismissed] = useState(false);
 
-  if (status === 'off') return null;
+  if (status === 'off' || dismissed) return null;
 
   let bg = p.successSoft;
   let fg = p.success;
@@ -18,18 +19,18 @@ export default function CollabBanner() {
   let text = 'Live — everyone sees your changes in real time';
 
   if (status === 'connecting') {
-    bg = p.accentSoft;
-    fg = p.accent;
+    bg = p.tintSoft;
+    fg = p.tint;
     Icon = Loader;
     text = 'Connecting to live session…';
   } else if (status === 'error') {
-    bg = p.accentSoft;
+    bg = '#FFE2DD';
     fg = p.danger;
     Icon = Eye;
     text = useCollab.getState().error || 'Live session unavailable';
   } else if (role === 'viewer') {
-    bg = p.accentSoft;
-    fg = p.accent;
+    bg = p.tintSoft;
+    fg = p.tint;
     Icon = Eye;
     text = 'View only — following the shared workspace';
   } else if (status === 'live') {
@@ -40,11 +41,18 @@ export default function CollabBanner() {
   }
 
   return (
-    <View style={[styles.bar, { backgroundColor: bg }]}>
-      <Icon size={14} color={fg} />
+    <View style={[styles.bar, { backgroundColor: bg, borderBottomColor: p.separator }]}>
+      <Icon size={14} color={fg} strokeWidth={1.5} />
       <Text style={[styles.text, { color: fg }]} numberOfLines={1}>
         {text}
       </Text>
+      <Pressable
+        onPress={() => setDismissed(true)}
+        hitSlop={8}
+        accessibilityLabel="Dismiss"
+        style={styles.dismiss}>
+        <X size={ICON_SIZE} color={fg} strokeWidth={1.5} />
+      </Pressable>
     </View>
   );
 }
@@ -55,8 +63,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    paddingVertical: 6,
+    paddingVertical: 5,
     paddingHorizontal: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  text: { fontSize: 12.5, fontWeight: '700' },
+  text: { fontSize: 12, fontWeight: '500', flex: 1 },
+  dismiss: { padding: 2 },
 });

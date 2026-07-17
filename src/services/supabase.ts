@@ -8,6 +8,8 @@ import {
   GOOGLE_IOS_CLIENT_ID,
   isPlaceholder,
 } from './supabaseConfig';
+import { getSecret, setSecret } from './secureStore';
+import { reportError } from './errorReporting';
 
 const OVERRIDE_URL_KEY = 'litnotes.supabase.url';
 const OVERRIDE_ANON_KEY = 'litnotes.supabase.anon';
@@ -30,10 +32,20 @@ let cachedKey = '';
 export async function loadSupabaseOverrides(): Promise<void> {
   try {
     overrideUrl = await AsyncStorage.getItem(OVERRIDE_URL_KEY);
-    overrideKey = await AsyncStorage.getItem(OVERRIDE_ANON_KEY);
+    overrideKey = await getSecret(OVERRIDE_ANON_KEY);
+    if (!overrideKey) {
+      // Migrate plaintext anon key → Keychain.
+      const plain = await AsyncStorage.getItem(OVERRIDE_ANON_KEY);
+      if (plain?.trim()) {
+        await setSecret(OVERRIDE_ANON_KEY, plain.trim());
+        await AsyncStorage.removeItem(OVERRIDE_ANON_KEY);
+        overrideKey = plain.trim();
+      }
+    }
     overrideGoogleWeb = await AsyncStorage.getItem(OVERRIDE_GOOGLE_WEB);
     overrideGoogleIos = await AsyncStorage.getItem(OVERRIDE_GOOGLE_IOS);
-  } catch {
+  } catch (e) {
+    reportError(e, { where: 'loadSupabaseOverrides' }, 'warning');
     overrideUrl = null;
     overrideKey = null;
     overrideGoogleWeb = null;
@@ -47,10 +59,11 @@ export async function saveSupabaseOverrides(url: string, anonKey: string): Promi
   try {
     if (overrideUrl) await AsyncStorage.setItem(OVERRIDE_URL_KEY, overrideUrl);
     else await AsyncStorage.removeItem(OVERRIDE_URL_KEY);
-    if (overrideKey) await AsyncStorage.setItem(OVERRIDE_ANON_KEY, overrideKey);
-    else await AsyncStorage.removeItem(OVERRIDE_ANON_KEY);
-  } catch {
-    /* noop */
+    if (overrideKey) await setSecret(OVERRIDE_ANON_KEY, overrideKey);
+    else await setSecret(OVERRIDE_ANON_KEY, '');
+    await AsyncStorage.removeItem(OVERRIDE_ANON_KEY);
+  } catch (e) {
+    reportError(e, { where: 'saveSupabaseOverrides' }, 'warning');
   }
   client = null;
 }

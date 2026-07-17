@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { Canvas, Path, Circle, Skia, DashPathEffect, BlurMask } from '@shopify/react-native-skia';
+import { Canvas, Path, Circle, Skia, DashPathEffect } from '@shopify/react-native-skia';
 import { useStore, type Highlight } from '../store';
-import { catStyle, useTheme } from '../theme';
+import { useTheme } from '../theme';
 import { CARD_WIDTH } from './ExcerptCard';
 import { AI_CARD_WIDTH } from './AiCard';
 import { highlightScreenAnchor } from '../services/threadAnchors';
@@ -114,11 +114,10 @@ export default function ThreadLayer() {
 
     const sx = lx(anchor.x);
     const sy = ly(anchor.y);
-    const cs = catStyle(data.category);
     paths.push({
       d: curvePath(sx, sy, tgt.x, tgt.y),
-      color: cs.color,
-      opacity: hoverNodeId && hoverNodeId !== node.id ? 0.22 : offPage ? 0.45 : 0.88,
+      color: p.textMuted,
+      opacity: hoverNodeId && hoverNodeId !== node.id ? 0.2 : offPage ? 0.4 : 0.7,
       dashed: offPage,
       pin: { x: sx, y: sy },
     });
@@ -155,8 +154,8 @@ export default function ThreadLayer() {
     if (!to) continue;
     paths.push({
       d: curvePath(from.x, from.y, to.x, to.y),
-      color: p.accent,
-      opacity: dashed ? 0.45 : 0.8,
+      color: p.textMuted,
+      opacity: dashed ? 0.4 : 0.65,
       dashed,
       pin: to,
     });
@@ -174,26 +173,12 @@ export default function ThreadLayer() {
                 path={path}
                 color={pth.color}
                 style="stroke"
-                strokeWidth={6}
-                opacity={pth.opacity * 0.28}
-                strokeCap="round">
-                <BlurMask blur={6} style="normal" />
-                {pth.dashed && <DashPathEffect intervals={[6, 4]} />}
-              </Path>
-              <Path
-                path={path}
-                color={pth.color}
-                style="stroke"
-                strokeWidth={2}
+                strokeWidth={1.25}
                 opacity={pth.opacity}
                 strokeCap="round">
-                {pth.dashed && <DashPathEffect intervals={[6, 4]} />}
+                {pth.dashed && <DashPathEffect intervals={[5, 4]} />}
               </Path>
-              {pth.pin && (
-                <Circle cx={pth.pin.x} cy={pth.pin.y} r={4.5} color={pth.color}>
-                  <BlurMask blur={3} style="solid" />
-                </Circle>
-              )}
+              {pth.pin && <Circle cx={pth.pin.x} cy={pth.pin.y} r={3} color={pth.color} />}
             </React.Fragment>
           );
         })}

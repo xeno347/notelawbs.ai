@@ -2,20 +2,31 @@ import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
-  TouchableOpacity,
+  Pressable,
   StyleSheet,
   ScrollView,
   Alert,
+  Image,
 } from 'react-native';
 import DocumentPicker from 'react-native-document-picker';
-import { Plus, FileText } from 'lucide-react-native';
+import { Plus, FileText, ChevronDown, ChevronRight } from 'lucide-react-native';
 import { useStore } from '../store';
-import { getPalette, useTheme, RADIUS, TYPE } from '../theme';
+import {
+  getPalette,
+  useTheme,
+  RADIUS,
+  TYPE,
+  SIDEBAR_W,
+  SIDEBAR_COMPACT_W,
+  ICON_SIZE,
+  ROW_H,
+} from '../theme';
 import { importWordAsPdf } from '../services/pdfUtilities';
 
+const LOGO = require('../assets/notelawbs-logo.png');
 const QUICK_TAGS = ['judgment', 'statute', 'brief', 'evidence', 'research'];
 
-export default function DocSidebar() {
+export default function DocSidebar({ compact = false }: { compact?: boolean }) {
   const p = useTheme();
   const library = useStore((s) => s.library);
   const activeDocId = useStore((s) => s.activeDocId);
@@ -23,8 +34,10 @@ export default function DocSidebar() {
   const openPdf = useStore((s) => s.openPdf);
   const selectLibraryDoc = useStore((s) => s.selectLibraryDoc);
   const updateLibraryDoc = useStore((s) => s.updateLibraryDoc);
+  const projectTitle = useStore((s) => s.projectTitle);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
-  const s = styles(p);
+  const [docsOpen, setDocsOpen] = useState(true);
+  const s = styles(p, compact);
 
   const usedTags = useMemo(() => {
     const set = new Set<string>();
@@ -97,8 +110,49 @@ export default function DocSidebar() {
     );
   };
 
+  if (compact) {
+    return (
+      <View style={s.root}>
+        <Image source={LOGO} style={s.compactLogo} resizeMode="contain" accessibilityLabel="NoteLawbs.Ai" />
+        <ScrollView style={s.list} contentContainerStyle={s.compactList} showsVerticalScrollIndicator={false}>
+          {visible.map((doc) => {
+            const active = doc.id === activeDocId;
+            return (
+              <Pressable
+                key={doc.id}
+                style={({ pressed }) => [
+                  s.compactRow,
+                  (active || pressed) && { backgroundColor: p.hover },
+                ]}
+                onPress={() => selectLibraryDoc(doc.id)}
+                onLongPress={active ? editTags : undefined}
+                accessibilityLabel={doc.name}>
+                <FileText size={ICON_SIZE} color={active ? p.text : p.textMuted} strokeWidth={1.5} />
+              </Pressable>
+            );
+          })}
+          <Pressable
+            style={({ pressed }) => [s.compactRow, pressed && { backgroundColor: p.hover }]}
+            onPress={openAddMenu}
+            accessibilityLabel="Add document">
+            <Plus size={ICON_SIZE} color={p.textMuted} strokeWidth={1.5} />
+          </Pressable>
+        </ScrollView>
+      </View>
+    );
+  }
+
   return (
     <View style={s.root}>
+      <Pressable
+        style={({ pressed }) => [s.workspace, pressed && { backgroundColor: p.hover }]}
+        onPress={() => {}}>
+        <Image source={LOGO} style={s.logo} resizeMode="contain" />
+        <Text style={s.workspaceLabel} numberOfLines={1}>
+          {projectTitle || 'NoteLawbs.Ai'}
+        </Text>
+      </Pressable>
+
       <ScrollView
         style={s.list}
         contentContainerStyle={s.listContent}
@@ -108,159 +162,177 @@ export default function DocSidebar() {
             horizontal
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={s.filterContent}>
-            <TouchableOpacity
+            <Pressable
               style={[s.filterChip, !tagFilter && s.filterChipOn]}
               onPress={() => setTagFilter(null)}>
               <Text style={[s.filterText, !tagFilter && s.filterTextOn]}>All</Text>
-            </TouchableOpacity>
+            </Pressable>
             {usedTags.map((t) => (
-              <TouchableOpacity
+              <Pressable
                 key={t}
                 style={[s.filterChip, tagFilter === t && s.filterChipOn]}
                 onPress={() => setTagFilter(tagFilter === t ? null : t)}>
                 <Text style={[s.filterText, tagFilter === t && s.filterTextOn]} numberOfLines={1}>
                   {t}
                 </Text>
-              </TouchableOpacity>
+              </Pressable>
             ))}
           </ScrollView>
         ) : null}
 
-        {visible.map((doc) => {
-          const active = doc.id === activeDocId;
-          const count = highlights.filter((h) => h.docId === doc.id).length;
-          return (
-            <TouchableOpacity
-              key={doc.id}
-              style={[s.docCard, active && s.docCardActive]}
-              onPress={() => selectLibraryDoc(doc.id)}
-              onLongPress={active ? editTags : undefined}
-              activeOpacity={0.72}>
-              <View style={[s.thumb, active && s.thumbActive]}>
-                <FileText size={20} color={active ? p.tint : p.textMuted} strokeWidth={1.7} />
-                {count > 0 ? (
-                  <View style={s.countPip}>
-                    <Text style={s.countText}>{count > 99 ? '99+' : count}</Text>
-                  </View>
-                ) : null}
-              </View>
-              <Text style={[s.docName, active && s.docNameActive]} numberOfLines={2}>
-                {doc.name.replace(/\.pdf$/i, '')}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
+        <Pressable style={s.sectionHead} onPress={() => setDocsOpen((v) => !v)}>
+          {docsOpen ? (
+            <ChevronDown size={14} color={p.textMuted} strokeWidth={1.5} />
+          ) : (
+            <ChevronRight size={14} color={p.textMuted} strokeWidth={1.5} />
+          )}
+          <Text style={s.sectionLabel}>Documents</Text>
+          <Pressable hitSlop={8} onPress={openAddMenu} style={s.ghostAdd}>
+            <Plus size={14} color={p.textMuted} strokeWidth={1.5} />
+          </Pressable>
+        </Pressable>
 
-        <TouchableOpacity style={s.addCard} onPress={openAddMenu} activeOpacity={0.72}>
-          <View style={s.addIcon}>
-            <Plus size={18} color={p.tint} strokeWidth={2.4} />
-          </View>
-          <Text style={s.addText}>Add</Text>
-        </TouchableOpacity>
+        {docsOpen
+          ? visible.map((doc) => {
+              const active = doc.id === activeDocId;
+              const count = highlights.filter((h) => h.docId === doc.id).length;
+              return (
+                <Pressable
+                  key={doc.id}
+                  style={({ pressed }) => [
+                    s.row,
+                    (active || pressed) && { backgroundColor: p.hover },
+                  ]}
+                  onPress={() => selectLibraryDoc(doc.id)}
+                  onLongPress={active ? editTags : undefined}>
+                  <FileText
+                    size={ICON_SIZE}
+                    color={active ? p.text : p.textMuted}
+                    strokeWidth={1.5}
+                  />
+                  <Text style={[s.rowLabel, active && s.rowLabelActive]} numberOfLines={1}>
+                    {doc.name.replace(/\.pdf$/i, '')}
+                  </Text>
+                  {count > 0 ? <Text style={s.count}>{count > 99 ? '99+' : count}</Text> : null}
+                </Pressable>
+              );
+            })
+          : null}
 
         {activeDoc ? (
-          <TouchableOpacity style={s.tagHint} onPress={editTags}>
+          <Pressable style={s.tagHint} onPress={editTags}>
             <Text style={s.tagHintText} numberOfLines={2}>
               {(activeDoc.tags || []).length
                 ? (activeDoc.tags || []).join(' · ')
-                : 'Long-press to tag'}
+                : 'Long-press a doc to tag'}
             </Text>
-          </TouchableOpacity>
+          </Pressable>
         ) : null}
       </ScrollView>
     </View>
   );
 }
 
-const styles = (p: ReturnType<typeof getPalette>) =>
+const styles = (p: ReturnType<typeof getPalette>, compact: boolean) =>
   StyleSheet.create({
     root: {
-      width: 88,
+      width: compact ? SIDEBAR_COMPACT_W : SIDEBAR_W,
       backgroundColor: p.sidebar,
       borderRightWidth: StyleSheet.hairlineWidth,
       borderRightColor: p.separator,
-      paddingTop: 8,
+      paddingTop: 6,
+      alignItems: compact ? 'center' : undefined,
     },
-    list: { flex: 1 },
-    listContent: { gap: 8, paddingBottom: 28, paddingHorizontal: 8 },
-    filterContent: { gap: 4, paddingBottom: 4, alignItems: 'center' },
+    workspace: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      marginHorizontal: 8,
+      marginBottom: 8,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+      borderRadius: RADIUS.md,
+      minHeight: ROW_H + 4,
+    },
+    logo: { width: 22, height: 22 },
+    compactLogo: { width: 28, height: 28, marginBottom: 8, marginTop: 4 },
+    workspaceLabel: {
+      ...TYPE.subhead,
+      fontWeight: '600',
+      color: p.text,
+      flex: 1,
+    },
+    list: { flex: 1, width: '100%' },
+    listContent: { paddingBottom: 28, paddingHorizontal: 8, gap: 1 },
+    compactList: { paddingBottom: 28, alignItems: 'center', gap: 2, paddingHorizontal: 6 },
+    compactRow: {
+      width: 40,
+      height: 40,
+      borderRadius: RADIUS.md,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    filterContent: { gap: 4, paddingBottom: 8, alignItems: 'center' },
     filterChip: {
-      paddingHorizontal: 7,
+      paddingHorizontal: 8,
       paddingVertical: 3,
-      borderRadius: RADIUS.pill,
-      backgroundColor: p.fillSecondary,
-      marginRight: 4,
-    },
-    filterChipOn: { backgroundColor: p.tintSoft },
-    filterText: { fontSize: 10, fontWeight: '600', color: p.textMuted },
-    filterTextOn: { color: p.tint },
-    docCard: {
-      alignItems: 'center',
-      padding: 4,
-      borderRadius: RADIUS.md,
-    },
-    docCardActive: { backgroundColor: p.sidebarActive },
-    thumb: {
-      width: '100%',
-      aspectRatio: 0.74,
-      maxHeight: 72,
       borderRadius: RADIUS.sm,
-      backgroundColor: p.grouped,
-      alignItems: 'center',
-      justifyContent: 'center',
-      marginBottom: 5,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: p.separator,
-      ...StyleSheet.flatten({
-        shadowColor: '#000',
-        shadowOpacity: 0.06,
-        shadowRadius: 6,
-        shadowOffset: { width: 0, height: 2 },
-      }),
+      backgroundColor: 'transparent',
+      marginRight: 2,
     },
-    thumbActive: { borderColor: p.tint, borderWidth: 1.5 },
-    countPip: {
-      position: 'absolute',
-      top: 3,
-      right: 3,
-      minWidth: 16,
-      height: 16,
-      borderRadius: 8,
-      paddingHorizontal: 3,
-      backgroundColor: p.accent,
+    filterChipOn: { backgroundColor: p.hover },
+    filterText: { fontSize: 12, fontWeight: '500', color: p.textMuted },
+    filterTextOn: { color: p.text },
+    sectionHead: {
+      flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'center',
+      gap: 4,
+      paddingHorizontal: 6,
+      paddingVertical: 4,
+      minHeight: ROW_H,
+      marginTop: 4,
     },
-    countText: { color: '#fff', fontSize: 9, fontWeight: '700' },
-    docName: {
-      ...TYPE.caption2,
-      fontSize: 11,
-      color: p.textMid,
+    sectionLabel: {
+      ...TYPE.caption1,
       fontWeight: '500',
-      lineHeight: 13,
-      textAlign: 'center',
+      color: p.textMuted,
+      flex: 1,
+      textTransform: 'uppercase',
+      letterSpacing: 0.4,
     },
-    docNameActive: { color: p.text, fontWeight: '600' },
-    addCard: {
-      alignItems: 'center',
-      paddingVertical: 10,
-      borderRadius: RADIUS.md,
-      gap: 5,
-    },
-    addIcon: {
-      width: 36,
-      height: 36,
-      borderRadius: 18,
-      backgroundColor: p.tintSoft,
+    ghostAdd: {
+      width: 22,
+      height: 22,
       alignItems: 'center',
       justifyContent: 'center',
+      borderRadius: RADIUS.sm,
+      opacity: 0.7,
     },
-    addText: { fontSize: 11, color: p.tint, fontWeight: '600' },
-    tagHint: { paddingHorizontal: 2, paddingTop: 4 },
-    tagHintText: {
-      fontSize: 9,
+    row: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      minHeight: ROW_H,
+      borderRadius: RADIUS.md,
+      marginLeft: 12,
+    },
+    rowLabel: {
+      ...TYPE.subhead,
+      color: p.textMid,
+      flex: 1,
+    },
+    rowLabelActive: { color: p.text, fontWeight: '500' },
+    count: {
+      ...TYPE.caption2,
       color: p.textMuted,
-      textAlign: 'center',
-      lineHeight: 12,
+      fontWeight: '500',
+    },
+    tagHint: { paddingHorizontal: 10, paddingTop: 10 },
+    tagHintText: {
+      ...TYPE.caption2,
+      color: p.textMuted,
+      lineHeight: 14,
     },
   });

@@ -6,6 +6,7 @@ import {
   StyleSheet,
   PanResponder,
   LayoutRectangle,
+  PixelRatio,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -13,8 +14,15 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Canvas, Path, Circle, Skia, Points, vec } from '@shopify/react-native-skia';
 import Svg, { Polyline } from 'react-native-svg';
-import { Undo2, Redo2, LayoutGrid } from 'lucide-react-native';
-import { useStore, type Stroke, type Edge, EDGE_RELATIONS, type EdgeRelation } from '../store';
+import { Undo2, Redo2, LayoutGrid, SquareDashedMousePointer, Trash2 } from 'lucide-react-native';
+import {
+  useStore,
+  type Stroke,
+  type Edge,
+  EDGE_RELATIONS,
+  type EdgeRelation,
+  type GroupData,
+} from '../store';
 import { useCollab, useViewerLocked } from '../collab/collabStore';
 import { useAnnotation, INK_SWATCHES } from '../annotationStore';
 import {
@@ -23,14 +31,22 @@ import {
   createPencilDoubleTap,
   readForce,
 } from '../services/pencilGestures';
-import { getPalette, useTheme, RADIUS, ELEVATION } from '../theme';
+import { allCategories, getPalette, useTheme, RADIUS, ELEVATION } from '../theme';
 import ExcerptCard, { CARD_WIDTH } from './ExcerptCard';
 import AiCard, { AI_CARD_WIDTH } from './AiCard';
 import NoteCard, { NOTE_CARD_WIDTH } from './NoteCard';
 import GroupCard, { GROUP_CARD_WIDTH } from './GroupCard';
 import CollabCursors from './CollabCursors';
 
-const BOARD = 6000;
+/**
+ * Logical board size in points. Skia allocates BOARD × PixelRatio GPU textures;
+ * Metal rejects anything above 8192 — 6000@2x (=12000) was crashing every paint.
+ */
+const MAX_METAL_TEX = 8192;
+const BOARD = Math.min(
+  6000,
+  Math.floor(MAX_METAL_TEX / Math.max(PixelRatio.get(), 1)) - 16,
+);
 
 function nodeWidth(type?: string) {
   if (type === 'ai') return AI_CARD_WIDTH;
@@ -75,12 +91,23 @@ export default function CanvasBoard() {
   const redoCanvas = useStore((s) => s.redoCanvas);
   const snapToGrid = useStore((s) => s.snapToGrid);
   const toggleSnapToGrid = useStore((s) => s.toggleSnapToGrid);
+  const selectedNodeIds = useStore((s) => s.selectedNodeIds);
+  const selectNodesInRect = useStore((s) => s.selectNodesInRect);
+  const clearSelection = useStore((s) => s.clearSelection);
+  const removeSelectedNodes = useStore((s) => s.removeSelectedNodes);
+  const setSelectedCategory = useStore((s) => s.setSelectedCategory);
+  const customCategories = useStore((s) => s.customCategories);
+  void customCategories;
   const sendCursor = useCollab((s) => s.sendCursor);
   const viewerLocked = useViewerLocked();
   const boardRef = useRef<View>(null);
   const layoutEpoch = useStore((s) => s.layoutEpoch);
 
   const [container, setContainer] = useState<LayoutRectangle | null>(null);
+  const [selectMode, setSelectMode] = useState(false);
+  const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const marqueeStart = useRef<{ x: number; y: number } | null>(null);
+  const marqueeRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const tool = useAnnotation((s) => s.tool);
   const inkColor = useAnnotation((s) => s.inkColor);
   const fingerDraw = useAnnotation((s) => s.fingerDraw);
@@ -249,7 +276,7 @@ export default function CanvasBoard() {
 
   const drawing = drawMode || eraseMode || (linking.active && linking.step === 'canvas');
 
-  // Board pan + pinch. Notes-style: finger pans even in Pen mode; Apple Pencil draws.
+  // Board pan + pinch. In select mode, one-finger drag draws a marquee instead of panning.
   const boardPan = useMemo(
     () =>
       PanResponder.create({
@@ -264,7 +291,6 @@ export default function CanvasBoard() {
         onPanResponderGrant: (evt) => {
           const t = tfRef.current;
           const touches = evt.nativeEvent.touches;
-          // Prefer page coords mapped through canvasOrigin — more stable than locationX on iPad.
           const origin = useStore.getState().canvasOrigin;
           const focal =
             touches.length === 2
@@ -283,6 +309,21 @@ export default function CanvasBoard() {
           strokeRef.current = null;
           setLiveStroke(null);
           setLivePointsSvg('');
+
+          if (selectMode && touches.length === 1) {
+            const locX = (touches[0] as any).locationX ?? 0;
+            const locY = (touches[0] as any).locationY ?? 0;
+            const boardX = (locX - t.tx) / t.s;
+            const boardY = (locY - t.ty) / t.s;
+            marqueeStart.current = { x: boardX, y: boardY };
+            const zero = { x: boardX, y: boardY, w: 0, h: 0 };
+            marqueeRef.current = zero;
+            setMarquee(zero);
+          } else {
+            marqueeStart.current = null;
+            marqueeRef.current = null;
+            setMarquee(null);
+          }
         },
         onPanResponderMove: (evt, g) => {
           const touches = evt.nativeEvent.touches;
@@ -299,6 +340,17 @@ export default function CanvasBoard() {
             sX.value = next.tx;
             sY.value = next.ty;
             commitDuringGesture(next);
+          } else if (selectMode && marqueeStart.current && touches.length === 1) {
+            const t = start;
+            const locX = (touches[0] as any).locationX ?? 0;
+            const locY = (touches[0] as any).locationY ?? 0;
+            const boardX = (locX - t.tx) / t.s;
+            const boardY = (locY - t.ty) / t.s;
+            const ox = marqueeStart.current.x;
+            const oy = marqueeStart.current.y;
+            const rect = { x: ox, y: oy, w: boardX - ox, h: boardY - oy };
+            marqueeRef.current = rect;
+            setMarquee(rect);
           } else {
             const next = { s: start.s, tx: start.tx + g.dx, ty: start.ty + g.dy };
             sX.value = next.tx;
@@ -309,19 +361,40 @@ export default function CanvasBoard() {
           }
         },
         onPanResponderRelease: () => {
-          const next = tfRef.current;
-          setTf(next);
-          useStore.getState().setCanvasTf(next);
-          publishOrigin();
+          if (selectMode && marqueeRef.current) {
+            selectNodesInRect(marqueeRef.current);
+            marqueeRef.current = null;
+            setMarquee(null);
+            marqueeStart.current = null;
+          } else {
+            const next = tfRef.current;
+            setTf(next);
+            useStore.getState().setCanvasTf(next);
+            publishOrigin();
+          }
         },
         onPanResponderTerminate: () => {
+          marqueeRef.current = null;
+          setMarquee(null);
+          marqueeStart.current = null;
           const next = tfRef.current;
           setTf(next);
           useStore.getState().setCanvasTf(next);
           publishOrigin();
         },
       }),
-    [drawing, fingerDraw, sendCursor, sScale, sX, sY, commitDuringGesture, publishOrigin],
+    [
+      drawing,
+      fingerDraw,
+      sendCursor,
+      sScale,
+      sX,
+      sY,
+      commitDuringGesture,
+      publishOrigin,
+      selectMode,
+      selectNodesInRect,
+    ],
   );
 
   // Ink under cards — Pencil draws board ink; excerpt cards ignore pointers while inking.
@@ -429,6 +502,14 @@ export default function CanvasBoard() {
 
   // Cull off-screen cards from mounting — edges/threads still use the full
   // `nodes` list (cheap Skia draws), only the heavy per-card Views are culled.
+  const collapsedGroupIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const n of nodes) {
+      if (n.type === 'group' && (n.data as GroupData).collapsed) ids.add(n.id);
+    }
+    return ids;
+  }, [nodes]);
+
   const visibleNodes = useMemo(() => {
     if (!container) return nodes;
     const margin = 420;
@@ -438,11 +519,12 @@ export default function CanvasBoard() {
     const viewRight = viewLeft + container.width / scl + margin * 2;
     const viewBottom = viewTop + container.height / scl + margin * 2;
     return nodes.filter((n) => {
+      if (n.groupId && collapsedGroupIds.has(n.groupId)) return false;
       const w = n.w || nodeWidth(n.type);
       const h = n.h || 160;
       return n.x + w >= viewLeft && n.x <= viewRight && n.y + h >= viewTop && n.y <= viewBottom;
     });
-  }, [nodes, container, tf]);
+  }, [nodes, container, tf, collapsedGroupIds]);
 
   const inkViewBox = useMemo(() => {
     if (!container) return null;
@@ -530,6 +612,23 @@ export default function CanvasBoard() {
               <View style={[StyleSheet.absoluteFill, { zIndex: 40 }]} {...drawPan.panHandlers} />
             )}
 
+            {marquee ? (
+              <View
+                pointerEvents="none"
+                style={{
+                  position: 'absolute',
+                  left: Math.min(marquee.x, marquee.x + marquee.w),
+                  top: Math.min(marquee.y, marquee.y + marquee.h),
+                  width: Math.abs(marquee.w),
+                  height: Math.abs(marquee.h),
+                  borderWidth: StyleSheet.hairlineWidth,
+                  borderColor: p.tint,
+                  backgroundColor: p.tintSoft,
+                  zIndex: 50,
+                }}
+              />
+            ) : null}
+
             <CollabCursors scale={tf.s} />
           </Animated.View>
         </Animated.View>
@@ -541,23 +640,59 @@ export default function CanvasBoard() {
           disabled={!history.past.length}
           style={[s.historyBtn, !history.past.length && s.historyBtnDisabled]}
           onPress={undoCanvas}>
-          <Undo2 size={16} color={history.past.length ? p.text : p.textMuted} strokeWidth={2.2} />
+          <Undo2 size={16} color={history.past.length ? p.text : p.textMuted} strokeWidth={1.5} />
         </TouchableOpacity>
         <TouchableOpacity
           accessibilityLabel="Redo"
           disabled={!history.future.length}
           style={[s.historyBtn, !history.future.length && s.historyBtnDisabled]}
           onPress={redoCanvas}>
-          <Redo2 size={16} color={history.future.length ? p.text : p.textMuted} strokeWidth={2.2} />
+          <Redo2 size={16} color={history.future.length ? p.text : p.textMuted} strokeWidth={1.5} />
         </TouchableOpacity>
         <View style={s.historySep} />
+        <TouchableOpacity
+          accessibilityLabel="Marquee select"
+          style={[s.historyBtn, selectMode && s.historyBtnActive]}
+          onPress={() => {
+            setSelectMode((v) => !v);
+            if (selectMode) clearSelection();
+          }}>
+          <SquareDashedMousePointer size={16} color={selectMode ? '#fff' : p.text} strokeWidth={1.5} />
+        </TouchableOpacity>
         <TouchableOpacity
           accessibilityLabel="Snap to grid"
           style={[s.historyBtn, snapToGrid && s.historyBtnActive]}
           onPress={toggleSnapToGrid}>
-          <LayoutGrid size={16} color={snapToGrid ? '#fff' : p.text} strokeWidth={2.2} />
+          <LayoutGrid size={16} color={snapToGrid ? '#fff' : p.text} strokeWidth={1.5} />
         </TouchableOpacity>
       </View>
+
+      {selectedNodeIds.length > 0 ? (
+        <View style={s.selectionBar} pointerEvents="box-none">
+          <Text style={s.selectionCount}>{selectedNodeIds.length} selected</Text>
+          <View style={s.selectionCats}>
+            {allCategories()
+              .slice(0, 6)
+              .map((c) => (
+                <TouchableOpacity
+                  key={c.key}
+                  style={[s.catDot, { backgroundColor: c.color }]}
+                  onPress={() => setSelectedCategory(c.key)}
+                  accessibilityLabel={`Tag ${c.label}`}
+                />
+              ))}
+          </View>
+          <TouchableOpacity
+            style={s.selectionBtn}
+            onPress={removeSelectedNodes}
+            accessibilityLabel="Delete selected">
+            <Trash2 size={16} color={p.danger} strokeWidth={1.5} />
+          </TouchableOpacity>
+          <TouchableOpacity style={s.selectionBtn} onPress={clearSelection}>
+            <Text style={{ color: p.textMid, fontSize: 12, fontWeight: '500' }}>Clear</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
 
       {nodes.length === 0 && ink.strokes.filter((st) => st.pdfPage == null).length === 0 && (
         <View style={s.emptyHint} pointerEvents="none">
@@ -793,6 +928,27 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     historyBtnDisabled: { opacity: 0.4 },
     historyBtnActive: { backgroundColor: p.tint },
     historySep: { width: 1, height: 20, backgroundColor: p.border, marginHorizontal: 2 },
+    selectionBar: {
+      position: 'absolute',
+      bottom: 72,
+      left: 12,
+      right: 12,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: RADIUS.pill,
+      backgroundColor: p.surface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: p.border,
+      zIndex: 55,
+      ...ELEVATION.card,
+    },
+    selectionCount: { fontSize: 12, fontWeight: '600', color: p.text },
+    selectionCats: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
+    catDot: { width: 18, height: 18, borderRadius: 9, borderWidth: StyleSheet.hairlineWidth, borderColor: p.border },
+    selectionBtn: { paddingHorizontal: 6, paddingVertical: 4 },
     emptyHint: {
       position: 'absolute',
       top: '28%',

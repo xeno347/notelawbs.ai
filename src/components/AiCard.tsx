@@ -79,7 +79,7 @@ function AiCard({
           onPress={() =>
             connecting && !isSource ? onConnectTo(node.id) : onConnectStart(node.id)
           }>
-          <Link2 size={14} color={isSource || connecting ? p.accent : p.textMuted} strokeWidth={2.1} />
+          <Link2 size={14} color={isSource || connecting ? p.tint : p.textMuted} strokeWidth={1.5} />
           <Text style={[s.link, isSource && s.linkActive]}>
             {isSource ? 'Pick target' : connecting ? 'Connect' : 'Link'}
           </Text>
@@ -96,40 +96,37 @@ const styles = (p: ReturnType<typeof getPalette>) =>
     card: {
       position: 'absolute',
       backgroundColor: p.surface,
-      borderWidth: 1,
+      borderWidth: StyleSheet.hairlineWidth,
       borderColor: p.border,
+      borderLeftWidth: 2,
+      borderLeftColor: p.ai,
       borderRadius: RADIUS.lg,
       overflow: 'hidden',
       ...ELEVATION.card,
     },
-    cardSource: { borderColor: p.accent, borderWidth: 1.5 },
+    cardSource: { borderColor: p.tint, borderLeftColor: p.tint },
     cardFocus: {
-      borderColor: p.ai,
-      borderWidth: 2,
-      shadowColor: p.ai,
-      shadowOpacity: 0.5,
-      shadowRadius: 16,
-      shadowOffset: { width: 0, height: 0 },
+      backgroundColor: p.hover,
     },
-    topRule: { height: 3, backgroundColor: p.ai },
-    inner: { padding: 12 },
-    del: { position: 'absolute', top: 6, right: 8, zIndex: 2 },
+    topRule: { height: 0 },
+    inner: { padding: 16 },
+    del: { position: 'absolute', top: 10, right: 10, zIndex: 2 },
     delText: { fontSize: 17, color: p.textMuted, lineHeight: 18 },
-    tagRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 4 },
+    tagRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 6 },
     tagDot: { width: 5, height: 5, borderRadius: 2.5, backgroundColor: p.ai },
-    tag: { fontSize: 10, fontWeight: '800', letterSpacing: 1, color: p.ai },
-    heading: { fontSize: 15, fontWeight: '700', color: p.text, marginBottom: 6, fontFamily: SERIF },
-    body: { fontSize: 12.5, lineHeight: 18, color: p.textMid, marginBottom: 8, fontFamily: SERIF },
+    tag: { fontSize: 11, fontWeight: '500', letterSpacing: 0.3, color: p.ai },
+    heading: { fontSize: 16, fontWeight: '600', color: p.text, marginBottom: 6 },
+    body: { fontSize: 14, lineHeight: 21, color: p.textMid, marginBottom: 8 },
     chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginBottom: 8 },
     chip: {
       maxWidth: '100%',
-      backgroundColor: p.bg2,
-      borderRadius: 4,
+      backgroundColor: p.aiSoft,
+      borderRadius: RADIUS.sm,
       paddingHorizontal: 7,
       paddingVertical: 3,
     },
-    chipText: { fontSize: 10.5, color: p.textMuted, fontFamily: SERIF },
+    chipText: { fontSize: 11, color: p.textMid, fontFamily: SERIF },
     linkBtn: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6 },
     link: { fontSize: 12, color: p.textMuted },
-    linkActive: { color: p.accent, fontWeight: '700' },
+    linkActive: { color: p.tint, fontWeight: '600' },
   });
