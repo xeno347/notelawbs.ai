@@ -28,7 +28,7 @@ import { migrateAiSecrets } from './services/aiClient';
 import ProjectLibraryScreen from './components/ProjectLibraryScreen';
 import TopBar from './components/TopBar';
 import NavRail from './components/NavRail';
-import DocSidebar from './components/DocSidebar';
+import DocSidebar, { DOC_SIDEBAR_COLLAPSED_W } from './components/DocSidebar';
 import PdfReader from './components/PdfReader';
 import CanvasBoard from './components/CanvasBoard';
 import LinearNotesPanel from './components/LinearNotesPanel';
@@ -76,11 +76,13 @@ const DIVIDER_W = 12;
  * Layout: fixed / resizable PDF pane + freeform OCR canvas.
  * Threads overlay both panes in window space.
  */
+const SPLIT_MIN = 0.15;
+const SPLIT_MAX = 0.85;
+
 function Workspace() {
   const { width, height } = useWindowDimensions();
   const isTablet = width >= 768;
   const compactChrome = !isTablet || width < 900 || height > width;
-  const sidebarWidth = compactChrome ? SIDEBAR_COMPACT_W : SIDEBAR_W;
   const p = useTheme();
 
   const linking = useStore((s) => s.linking);
@@ -110,10 +112,44 @@ function Workspace() {
   const [exportOpen, setExportOpen] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [tab, setTab] = useState<'reader' | 'canvas'>('reader');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [canvasArmed, setCanvasArmed] = useState(true);
   const canvasRef = useRef<View>(null);
   const rightPaneMode = useStore((s) => s.rightPaneMode);
   const setRightPaneMode = useStore((s) => s.setRightPaneMode);
   const pdfVisible = isTablet || tab === 'reader';
+
+  const sidebarWidth = sidebarCollapsed
+    ? DOC_SIDEBAR_COLLAPSED_W
+    : compactChrome
+      ? SIDEBAR_COMPACT_W
+      : SIDEBAR_W;
+
+  // After a PDF opens, delay mounting Skia canvas so PDFium can settle first
+  // (combined GPU + JS pressure jetsams older iPads).
+  useEffect(() => {
+    if (!docUri) {
+      setCanvasArmed(true);
+      return;
+    }
+    setCanvasArmed(false);
+    const t = setTimeout(() => setCanvasArmed(true), 2200);
+    return () => clearTimeout(t);
+  }, [docUri]);
+
+  // Force-disable legacy auto-OCR prefs that caused open-time crashes.
+  useEffect(() => {
+    setSetting('autoOcr', '0').catch(() => {});
+    if (useStore.getState().autoOcr) useStore.getState().setAutoOcr(false);
+  }, []);
+
+  const toggleSidebarCollapsed = () => {
+    setSidebarCollapsed((v) => {
+      const next = !v;
+      setSetting('sidebarCollapsed', next ? '1' : '0').catch(() => {});
+      return next;
+    });
+  };
 
   // Split ratio of the PDF pane within (workspace − sidebar − divider).
   const splitRatio = useSharedValue(0.48);
@@ -124,6 +160,7 @@ function Workspace() {
 
   useEffect(() => {
     sidebarWSV.value = sidebarWidth;
+    useStore.getState().bumpLayoutEpoch();
   }, [sidebarWidth, sidebarWSV]);
 
   const readerPaneStyle = useAnimatedStyle(() => {
@@ -148,7 +185,10 @@ function Workspace() {
         onPanResponderMove: (_e, g) => {
           const usable = wsWidthSV.value - sidebarWSV.value - DIVIDER_W;
           if (usable <= 0) return;
-          splitRatio.value = Math.min(0.72, Math.max(0.28, ratioStart.current + g.dx / usable));
+          splitRatio.value = Math.min(
+            SPLIT_MAX,
+            Math.max(SPLIT_MIN, ratioStart.current + g.dx / usable),
+          );
         },
         onPanResponderRelease: () => {
           dragActive.value = 0;
@@ -181,10 +221,13 @@ function Workspace() {
   useEffect(() => {
     getSetting('splitRatio').then((v) => {
       const parsed = v ? parseFloat(v) : NaN;
-      if (Number.isFinite(parsed) && parsed >= 0.28 && parsed <= 0.72) {
+      if (Number.isFinite(parsed) && parsed >= SPLIT_MIN && parsed <= SPLIT_MAX) {
         splitRatio.value = parsed;
         ratioStart.current = parsed;
       }
+    });
+    getSetting('sidebarCollapsed').then((v) => {
+      if (v === '1') setSidebarCollapsed(true);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -473,7 +516,11 @@ function Workspace() {
           }}>
           {isTablet ? (
             <>
-              <DocSidebar compact={compactChrome} />
+              <DocSidebar
+                compact={compactChrome}
+                collapsed={sidebarCollapsed}
+                onToggleCollapse={toggleSidebarCollapsed}
+              />
               <Animated.View style={[readerPaneStyle, styles.pane]}>
                 <ErrorBoundary fallbackTitle="Reader error">
                   <PdfReader />
@@ -483,7 +530,7 @@ function Workspace() {
                 <Animated.View
                   style={[styles.dividerTrack, { backgroundColor: p.border }, dividerStyle]}
                 />
-                <View style={[styles.dividerGrip, { backgroundColor: p.fill }]} />
+                <View style={[styles.dividerGrip, { backgroundColor: p.textMuted }]} />
               </View>
               <View style={[styles.pane, { backgroundColor: p.bg }]}>
                 <View style={[styles.paneModeRow, { borderBottomColor: p.separator }]}>
@@ -507,7 +554,13 @@ function Workspace() {
                 ) : (
                   <View ref={canvasRef} collapsable={false} style={styles.flex}>
                     <ErrorBoundary fallbackTitle="Canvas error">
-                      <CanvasBoard />
+                      {canvasArmed ? (
+                        <CanvasBoard />
+                      ) : (
+                        <View style={[styles.flex, { alignItems: 'center', justifyContent: 'center' }]}>
+                          <Text style={{ color: p.textMuted, fontSize: 13 }}>Preparing canvas…</Text>
+                        </View>
+                      )}
                     </ErrorBoundary>
                   </View>
                 )}
@@ -517,7 +570,11 @@ function Workspace() {
             <>
               {tab === 'reader' ? (
                 <View style={styles.phoneRow}>
-                  <DocSidebar compact />
+                  <DocSidebar
+                    compact
+                    collapsed={sidebarCollapsed}
+                    onToggleCollapse={toggleSidebarCollapsed}
+                  />
                   <View style={styles.flex}>
                     <ErrorBoundary fallbackTitle="Reader error">
                       <PdfReader />
@@ -531,7 +588,7 @@ function Workspace() {
               ) : (
                 <View ref={canvasRef} collapsable={false} style={styles.flex}>
                   <ErrorBoundary fallbackTitle="Canvas error">
-                    <CanvasBoard />
+                    {canvasArmed ? <CanvasBoard /> : null}
                   </ErrorBoundary>
                 </View>
               )}
@@ -539,7 +596,10 @@ function Workspace() {
           )}
           <ThreadLayer />
           {pdfVisible ? (
-            <AnnotationBar onFitCanvas={() => useAnnotation.getState().requestFit()} />
+            <AnnotationBar
+              onFitCanvas={() => useAnnotation.getState().requestFit()}
+              onScanPage={() => useAnnotation.getState().requestScanPage()}
+            />
           ) : null}
         </View>
       </View>
@@ -731,8 +791,9 @@ const styles = StyleSheet.create({
     width: StyleSheet.hairlineWidth,
   },
   dividerGrip: {
-    width: 4,
-    height: 36,
-    borderRadius: 2,
+    width: 5,
+    height: 48,
+    borderRadius: 3,
+    opacity: 0.55,
   },
 });

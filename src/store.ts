@@ -692,7 +692,7 @@ export const useStore = create<StoreState>((set, get) => ({
   projects: [],
   projectId: null,
   projectTitle: '',
-  autoOcr: true,
+  autoOcr: false,
   preferCloudOcr: true,
   ...emptyWorkspace,
   threadsOn: true,
@@ -1008,8 +1008,8 @@ export const useStore = create<StoreState>((set, get) => ({
       projectTitle: '',
       view: 'library',
       ...emptyWorkspace,
-      autoOcr: autoOcrRaw !== '0',
-      preferCloudOcr: preferCloudRaw !== '0',
+      autoOcr: autoOcrRaw === '1',
+      preferCloudOcr: preferCloudRaw === '1',
       hydrated: true,
     });
   },
@@ -1150,23 +1150,13 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   openPdf: async (uri, name, opts) => {
-    let contentHash = '';
+    // Persist + show first; hash in the background so large base64 reads never
+    // race the native PDF renderer (jetsam on older iPads).
     let byteSize = 0;
     try {
-      contentHash = await hashFileSha256(uri);
       byteSize = await fileByteSize(uri);
     } catch {
-      /* hash optional on pick failures */
-    }
-
-    // De-dupe by content hash (PRD 4.1) unless caller forces a new copy.
-    if (contentHash && !opts?.forceNew) {
-      const byHash = get().library.find((d) => d.contentHash && d.contentHash === contentHash);
-      if (byHash) {
-        get().selectLibraryDoc(byHash.id);
-        get().updateLibraryDoc(byHash.id, { lastOpenedAt: Date.now(), byteSize: byteSize || byHash.byteSize });
-        return { deduped: true, id: byHash.id };
-      }
+      /* optional */
     }
 
     const existing = get().library.find((d) => d.name === name);
@@ -1179,7 +1169,7 @@ export const useStore = create<StoreState>((set, get) => ({
       }
       const restored = ocrFromCache(ocrByDocId[id]);
       const meta = {
-        contentHash: contentHash || existing?.contentHash,
+        contentHash: existing?.contentHash,
         byteSize: byteSize || existing?.byteSize,
         lastOpenedAt: Date.now(),
         tags: existing?.tags || [],
@@ -1209,6 +1199,32 @@ export const useStore = create<StoreState>((set, get) => ({
       };
     });
     saveWorkspaceDebounced(snapshot(get()));
+
+    // Background de-dupe hash — never block first paint / PDF load.
+    if (!opts?.forceNew) {
+      void (async () => {
+        try {
+          const contentHash = await hashFileSha256(stored);
+          if (!contentHash) return;
+          const byHash = get().library.find(
+            (d) => d.id !== id && d.contentHash && d.contentHash === contentHash,
+          );
+          if (byHash) {
+            // Same bytes already in library — switch to the existing copy.
+            get().selectLibraryDoc(byHash.id);
+            get().updateLibraryDoc(byHash.id, {
+              lastOpenedAt: Date.now(),
+              byteSize: byteSize || byHash.byteSize,
+            });
+            return;
+          }
+          get().updateLibraryDoc(id, { contentHash, byteSize: byteSize || undefined });
+        } catch {
+          /* hash optional */
+        }
+      })();
+    }
+
     return { deduped: false, id };
   },
 

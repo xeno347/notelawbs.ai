@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, PanResponder, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, PanResponder } from 'react-native';
 import type { OcrPageData } from '../services/ocrService';
 import type { Rect } from '../store';
 import {
@@ -9,7 +9,7 @@ import {
   handleAnchors,
   type WordToken,
 } from '../services/textSelection';
-import { RADIUS, ELEVATION } from '../theme';
+import { RADIUS } from '../theme';
 
 export type LiveSelection = {
   start: number;
@@ -25,46 +25,39 @@ type Props = {
   pageData: OcrPageData | null | undefined;
   ensuringOcr: boolean;
   onEnsureOcr: () => Promise<OcrPageData | null>;
+  /** Apply mark as soon as the finger lifts — no second tap. */
   onConfirm: (sel: LiveSelection) => void;
   onBusyChange?: (busy: boolean) => void;
-  tint: string;
-  tintSoft: string;
-  textColor: string;
   mutedColor: string;
-  surface: string;
 };
 
 /**
- * Text selection over the PDF page:
- * - With OCR/text-layer words: long-press a word, drag to extend (native style).
- * - Without words yet: drag a marquee rectangle so highlighting still works
- *   before OCR finishes (or when Auto OCR is off).
+ * Direct text selection (native feel):
+ * press a word → drag to extend → lift → highlighted.
+ * No tool mode, no Scan step, no confirm button.
  */
 export default function TextSelectOverlay({
   enabled,
   frame,
   pageData,
-  ensuringOcr: _ensuringOcr,
+  ensuringOcr,
   onEnsureOcr,
   onConfirm,
   onBusyChange,
-  tint,
-  tintSoft,
   mutedColor,
-  surface,
 }: Props) {
   const [range, setRange] = useState<{ start: number; end: number } | null>(null);
   const [dragging, setDragging] = useState<'start' | 'end' | 'extend' | null>(null);
-  const [marquee, setMarquee] = useState<Rect | null>(null);
   const wordsRef = useRef<WordToken[]>([]);
   const anchorRef = useRef(-1);
   const longTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pressOrigin = useRef<{ x: number; y: number } | null>(null);
   const started = useRef(false);
-  const marqueeMode = useRef(false);
-  const marqueeRef = useRef<Rect | null>(null);
+  const fingerDown = useRef(false);
   const rangeRef = useRef(range);
   rangeRef.current = range;
+  const onConfirmRef = useRef(onConfirm);
+  onConfirmRef.current = onConfirm;
 
   const words = useMemo(() => (pageData ? flattenWords(pageData) : []), [pageData]);
   wordsRef.current = words;
@@ -72,16 +65,12 @@ export default function TextSelectOverlay({
   useEffect(() => {
     setRange(null);
     setDragging(null);
-    setMarquee(null);
-    marqueeRef.current = null;
   }, [pageData]);
 
   useEffect(() => {
     if (!enabled) {
       setRange(null);
       setDragging(null);
-      setMarquee(null);
-      marqueeRef.current = null;
     }
   }, [enabled]);
 
@@ -100,56 +89,56 @@ export default function TextSelectOverlay({
     }
   };
 
+  const commitSelection = (start: number, end: number, list: WordToken[]) => {
+    const hit = selectionFromRange(list, start, end);
+    if (!hit || !hit.text.trim()) return;
+    onConfirmRef.current({
+      start,
+      end,
+      text: hit.text,
+      rect: hit.rect,
+      rects: hit.rects,
+    });
+    setRange(null);
+    setDragging(null);
+    started.current = false;
+    anchorRef.current = -1;
+  };
+
+  const beginWordAt = (px: number, py: number, list: WordToken[]) => {
+    const idx = nearestWordIndex(list, px / frame.w, py / frame.h);
+    if (idx < 0) return false;
+    anchorRef.current = idx;
+    started.current = true;
+    setRange({ start: idx, end: idx });
+    setDragging('extend');
+    return true;
+  };
+
   const beginAt = async (px: number, py: number) => {
+    if (wordsRef.current.length) {
+      beginWordAt(px, py, wordsRef.current);
+      return;
+    }
     onBusyChange?.(true);
     try {
-      let data = pageData;
-      if (!data?.blocks?.length) {
-        data = await onEnsureOcr();
-      }
+      const data = await onEnsureOcr();
       const list = data ? flattenWords(data) : [];
       wordsRef.current = list;
-      if (!list.length) {
-        // No OCR words — fall back to marquee from the press origin.
-        marqueeMode.current = true;
-        started.current = true;
-        const origin = pressOrigin.current || { x: px, y: py };
-        const box = {
-          x: Math.min(origin.x, px),
-          y: Math.min(origin.y, py),
-          w: Math.max(8, Math.abs(px - origin.x)),
-          h: Math.max(8, Math.abs(py - origin.y)),
-        };
-        marqueeRef.current = box;
-        setMarquee(box);
-        return;
-      }
+      if (!list.length) return;
       const idx = nearestWordIndex(list, px / frame.w, py / frame.h);
       if (idx < 0) return;
-      marqueeMode.current = false;
-      anchorRef.current = idx;
-      started.current = true;
-      setRange({ start: idx, end: idx });
-      setDragging('extend');
+      if (!fingerDown.current) {
+        commitSelection(idx, idx, list);
+        return;
+      }
+      beginWordAt(px, py, list);
     } finally {
       onBusyChange?.(false);
     }
   };
 
   const extendTo = (px: number, py: number) => {
-    if (marqueeMode.current) {
-      const origin = pressOrigin.current;
-      if (!origin) return;
-      const box = {
-        x: Math.min(origin.x, px),
-        y: Math.min(origin.y, py),
-        w: Math.abs(px - origin.x),
-        h: Math.abs(py - origin.y),
-      };
-      marqueeRef.current = box;
-      setMarquee(box);
-      return;
-    }
     const list = wordsRef.current;
     if (!list.length || anchorRef.current < 0) return;
     const idx = nearestWordIndex(list, px / frame.w, py / frame.h);
@@ -157,62 +146,34 @@ export default function TextSelectOverlay({
     setRange({ start: Math.min(anchorRef.current, idx), end: Math.max(anchorRef.current, idx) });
   };
 
-  const confirmMarquee = () => {
-    const box = marqueeRef.current;
-    if (!box || box.w < 8 || box.h < 8 || !frame.w || !frame.h) return;
-    const rect: Rect = {
-      x: box.x / frame.w,
-      y: box.y / frame.h,
-      w: box.w / frame.w,
-      h: box.h / frame.h,
-    };
-    onConfirm({
-      start: 0,
-      end: 0,
-      text: '',
-      rect,
-      rects: [rect],
-    });
-    setMarquee(null);
-    marqueeRef.current = null;
-    marqueeMode.current = false;
-  };
-
   const selectPan = useMemo(
     () =>
       PanResponder.create({
-        // Do not gate on ensuringOcr — flipping that flag recreates this
-        // responder mid-gesture and drops the selection.
         onStartShouldSetPanResponder: () => enabled,
-        onMoveShouldSetPanResponder: () => enabled && started.current,
+        onMoveShouldSetPanResponder: (_e, g) => enabled && (Math.abs(g.dx) > 4 || Math.abs(g.dy) > 4),
+        onStartShouldSetPanResponderCapture: () => false,
+        onMoveShouldSetPanResponderCapture: () => false,
         onPanResponderTerminationRequest: () => !started.current,
         onPanResponderGrant: (evt) => {
-          if (!enabled) return;
           const { locationX, locationY } = evt.nativeEvent;
+          fingerDown.current = true;
           pressOrigin.current = { x: locationX, y: locationY };
           started.current = false;
-          marqueeMode.current = false;
-          setMarquee(null);
-          marqueeRef.current = null;
           clearLong();
-          // If words already exist, long-press to select. Otherwise start a
-          // quick marquee after a short hold (or immediately on drag).
           const hasWords = wordsRef.current.length > 0;
           longTimer.current = setTimeout(() => {
             beginAt(locationX, locationY);
-          }, hasWords ? 320 : 180);
+          }, hasWords ? 160 : 280);
         },
         onPanResponderMove: (evt) => {
           const { locationX, locationY } = evt.nativeEvent;
           const origin = pressOrigin.current;
           if (!started.current && origin) {
             const dist = Math.hypot(locationX - origin.x, locationY - origin.y);
-            if (dist > 14) {
+            if (dist > 12) {
               clearLong();
-              // Drag without waiting for long-press → marquee when no words yet.
-              if (!wordsRef.current.length) {
-                marqueeMode.current = true;
-                started.current = true;
+              if (wordsRef.current.length) {
+                beginWordAt(origin.x, origin.y, wordsRef.current);
                 extendTo(locationX, locationY);
               }
             }
@@ -222,30 +183,24 @@ export default function TextSelectOverlay({
         },
         onPanResponderRelease: () => {
           clearLong();
+          fingerDown.current = false;
           pressOrigin.current = null;
-          if (started.current && marqueeMode.current) {
-            const box = marqueeRef.current;
-            if (box && box.w > 8 && box.h > 8) {
-              // Keep marquee painted until user confirms via toolbar.
-              setDragging(null);
-              started.current = false;
-              return;
-            }
-          }
-          if (started.current) {
+          const cur = rangeRef.current;
+          const list = wordsRef.current;
+          if (started.current && cur && list.length) {
+            commitSelection(cur.start, cur.end, list);
+          } else {
             setDragging(null);
+            started.current = false;
           }
-          started.current = false;
-          marqueeMode.current = false;
         },
         onPanResponderTerminate: () => {
           clearLong();
+          fingerDown.current = false;
           pressOrigin.current = null;
           setDragging(null);
           started.current = false;
-          marqueeMode.current = false;
-          setMarquee(null);
-          marqueeRef.current = null;
+          setRange(null);
         },
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -260,6 +215,7 @@ export default function TextSelectOverlay({
       onPanResponderGrant: () => {
         const cur = rangeRef.current;
         if (!cur) return;
+        fingerDown.current = true;
         setDragging(which);
         anchorRef.current = which === 'start' ? cur.end : cur.start;
       },
@@ -273,8 +229,17 @@ export default function TextSelectOverlay({
           end: Math.max(anchorRef.current, idx),
         });
       },
-      onPanResponderRelease: () => setDragging(null),
-      onPanResponderTerminate: () => setDragging(null),
+      onPanResponderRelease: () => {
+        fingerDown.current = false;
+        setDragging(null);
+        const cur = rangeRef.current;
+        const list = wordsRef.current;
+        if (cur && list.length) commitSelection(cur.start, cur.end, list);
+      },
+      onPanResponderTerminate: () => {
+        fingerDown.current = false;
+        setDragging(null);
+      },
     });
 
   const startHandlePan = useMemo(() => makeHandlePan('start'), [frame.w, frame.h]);
@@ -282,10 +247,39 @@ export default function TextSelectOverlay({
 
   if (!enabled) return null;
 
-  const marqueeReady = !!(marquee && marquee.w > 8 && marquee.h > 8 && !started.current);
+  const selectionFill = 'rgba(52, 120, 246, 0.38)';
+  const handleColor = '#6B7280';
+
+  const renderHandle = (
+    which: 'start' | 'end',
+    anchor: { x: number; y: number; h: number },
+  ) => {
+    const lineH = Math.max(anchor.h * frame.h, 14);
+    const left = anchor.x * frame.w - 11;
+    const top = anchor.y * frame.h;
+    const pan = which === 'start' ? startHandlePan : endHandlePan;
+    return (
+      <View
+        key={`handle-${which}`}
+        style={[styles.handleHit, { left, top: top + lineH - 2 }]}
+        {...pan.panHandlers}>
+        <View
+          style={[styles.handleStem, { backgroundColor: handleColor, height: lineH + 4, bottom: 18 }]}
+        />
+        <View style={[styles.handleHouse, { borderBottomColor: handleColor }]} />
+        <View style={[styles.handleHouseBody, { backgroundColor: handleColor }]} />
+      </View>
+    );
+  };
 
   return (
     <View style={StyleSheet.absoluteFill} {...selectPan.panHandlers}>
+      {ensuringOcr ? (
+        <View style={styles.prepHint} pointerEvents="none">
+          <Text style={[styles.prepHintText, { color: mutedColor }]}>Reading text…</Text>
+        </View>
+      ) : null}
+
       {live &&
         live.hit.rects.map((rect, i) => (
           <View
@@ -295,182 +289,66 @@ export default function TextSelectOverlay({
               position: 'absolute',
               left: rect.x * frame.w,
               top: rect.y * frame.h,
-              width: rect.w * frame.w,
-              height: Math.max(rect.h * frame.h, 14),
-              backgroundColor: tintSoft,
-              borderRadius: 3,
+              width: Math.max(rect.w * frame.w, 4),
+              height: Math.max(rect.h * frame.h, 12),
+              backgroundColor: selectionFill,
+              borderRadius: 1,
             }}
           />
         ))}
 
-      {marquee && (
-        <View
-          pointerEvents="none"
-          style={{
-            position: 'absolute',
-            left: marquee.x,
-            top: marquee.y,
-            width: marquee.w,
-            height: marquee.h,
-            backgroundColor: tintSoft,
-            borderWidth: 1.5,
-            borderColor: tint,
-          }}
-        />
-      )}
-
-      {live?.handles && !dragging && (
-        <>
-          <View
-            style={[
-              styles.handle,
-              {
-                left: live.handles.start.x * frame.w - 10,
-                top: live.handles.start.y * frame.h - 6,
-                height: live.handles.start.h * frame.h + 12,
-                borderColor: tint,
-              },
-            ]}
-            {...startHandlePan.panHandlers}>
-            <View style={[styles.handleKnob, { backgroundColor: tint, top: -4 }]} />
-          </View>
-          <View
-            style={[
-              styles.handle,
-              {
-                left: live.handles.end.x * frame.w - 10,
-                top: live.handles.end.y * frame.h - 6,
-                height: live.handles.end.h * frame.h + 12,
-                borderColor: tint,
-              },
-            ]}
-            {...endHandlePan.panHandlers}>
-            <View style={[styles.handleKnob, { backgroundColor: tint, bottom: -4 }]} />
-          </View>
-        </>
-      )}
-
-      {live?.handles && dragging && (
-        <>
-          <View
-            pointerEvents="none"
-            style={[
-              styles.handle,
-              {
-                left: live.handles.start.x * frame.w - 10,
-                top: live.handles.start.y * frame.h - 6,
-                height: live.handles.start.h * frame.h + 12,
-                borderColor: tint,
-              },
-            ]}>
-            <View style={[styles.handleKnob, { backgroundColor: tint, top: -4 }]} />
-          </View>
-          <View
-            pointerEvents="none"
-            style={[
-              styles.handle,
-              {
-                left: live.handles.end.x * frame.w - 10,
-                top: live.handles.end.y * frame.h - 6,
-                height: live.handles.end.h * frame.h + 12,
-                borderColor: tint,
-              },
-            ]}>
-            <View style={[styles.handleKnob, { backgroundColor: tint, bottom: -4 }]} />
-          </View>
-        </>
-      )}
-
-      {live && !dragging && (
-        <View
-          style={[
-            styles.toolbar,
-            {
-              top: Math.max(8, live.hit.rect.y * frame.h - 52),
-              left: Math.min(
-                frame.w - 210,
-                Math.max(8, live.hit.rect.x * frame.w + (live.hit.rect.w * frame.w) / 2 - 100),
-              ),
-              backgroundColor: surface,
-            },
-          ]}>
-          <TouchableOpacity
-            onPress={() =>
-              onConfirm({
-                start: live.start,
-                end: live.end,
-                text: live.hit.text,
-                rect: live.hit.rect,
-                rects: live.hit.rects,
-              })
-            }
-            style={[styles.toolBtn, { backgroundColor: tint }]}>
-            <Text style={styles.toolBtnText}>Highlight</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setRange(null)} style={styles.toolGhost}>
-            <Text style={[styles.toolGhostText, { color: mutedColor }]}>Cancel</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {marqueeReady && (
-        <View
-          style={[
-            styles.toolbar,
-            {
-              top: Math.max(8, marquee!.y - 52),
-              left: Math.min(frame.w - 210, Math.max(8, marquee!.x + marquee!.w / 2 - 100)),
-              backgroundColor: surface,
-            },
-          ]}>
-          <TouchableOpacity onPress={confirmMarquee} style={[styles.toolBtn, { backgroundColor: tint }]}>
-            <Text style={styles.toolBtnText}>Highlight</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => {
-              setMarquee(null);
-              marqueeRef.current = null;
-            }}
-            style={styles.toolGhost}>
-            <Text style={[styles.toolGhostText, { color: mutedColor }]}>Cancel</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+      {live?.handles ? renderHandle('start', live.handles.start) : null}
+      {live?.handles ? renderHandle('end', live.handles.end) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  handle: {
+  prepHint: {
     position: 'absolute',
-    width: 20,
-    borderLeftWidth: 2,
-    zIndex: 5,
-  },
-  handleKnob: {
-    position: 'absolute',
-    left: -5,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-  },
-  toolbar: {
-    position: 'absolute',
-    zIndex: 8,
-    flexDirection: 'row',
+    left: 12,
+    right: 12,
+    top: 12,
     alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: RADIUS.pill,
-    ...ELEVATION.float,
   },
-  toolBtn: {
-    paddingHorizontal: 14,
+  prepHintText: {
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+    backgroundColor: 'rgba(255,255,255,0.88)',
+    paddingHorizontal: 12,
     paddingVertical: 8,
-    borderRadius: RADIUS.pill,
+    borderRadius: RADIUS.sm,
+    overflow: 'hidden',
   },
-  toolBtnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
-  toolGhost: { paddingHorizontal: 10, paddingVertical: 8 },
-  toolGhostText: { fontWeight: '500', fontSize: 14 },
+  handleHit: {
+    position: 'absolute',
+    width: 44,
+    height: 44,
+    marginLeft: -11,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    zIndex: 6,
+  },
+  handleStem: {
+    position: 'absolute',
+    width: 2,
+    borderRadius: 1,
+  },
+  handleHouse: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 8,
+    borderRightWidth: 8,
+    borderBottomWidth: 7,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    marginBottom: -1,
+  },
+  handleHouseBody: {
+    width: 16,
+    height: 12,
+    borderBottomLeftRadius: 2,
+    borderBottomRightRadius: 2,
+  },
 });

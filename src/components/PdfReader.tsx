@@ -26,15 +26,14 @@ import {
   Rows3,
   Square,
   MoreHorizontal,
+  ScanText,
 } from 'lucide-react-native';
 import { useStore, type Rect } from '../store';
-import PdfThumbStrip from './PdfThumbStrip';
 import { useViewerLocked } from '../collab/collabStore';
 import { useAnnotation, INK_SWATCHES, isInkTool } from '../annotationStore';
 import type { Stroke } from '../store';
 import Svg, { Polyline } from 'react-native-svg';
 import {
-  shouldAcceptDraw,
   pencilStrokeWidth,
   createPencilDoubleTap,
   readForce,
@@ -114,6 +113,7 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
   const setDocMeta = useStore((s) => s.setDocMeta);
   const setCurrentPage = useStore((s) => s.setCurrentPage);
   const createLinkedExcerpt = useStore((s) => s.createLinkedExcerpt);
+  const addHighlight = useStore((s) => s.addHighlight);
   const clearFlash = useStore((s) => s.clearFlash);
   const completeLink = useStore((s) => s.completeLink);
   const setAutoOcr = useStore((s) => s.setAutoOcr);
@@ -131,19 +131,26 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
   const [aspect, setAspect] = useState(0.72);
   const tool = useAnnotation((s) => s.tool);
   const inkColor = useAnnotation((s) => s.inkColor);
-  const fingerDraw = useAnnotation((s) => s.fingerDraw);
   const setTool = useAnnotation((s) => s.setTool);
   const pdfInkMode = isInkTool(tool);
-  const highlightMode = tool === 'box';
   const viewerLocked = useViewerLocked();
-  // Text / Under / Strike enable selection overlay. Read mode stays pass-through
-  // so page turns and PDF gestures are not stolen. Box uses its own marquee.
+  // Direct selection whenever you're reading — no Highlight tool required.
+  // Only yield the page to Draw / Box / Link.
   const textSelectMode =
     !viewerLocked &&
     !linking.active &&
     !pdfInkMode &&
-    !highlightMode &&
-    (tool === 'select' || tool === 'underline' || tool === 'strikethrough');
+    tool !== 'box' &&
+    readingMode === 'page';
+  const marqueeMode =
+    !viewerLocked && !linking.active && !pdfInkMode && tool === 'box';
+  /** Native PDF steals touches on iOS — disable it while selecting / drawing. */
+  const blockPdfTouches =
+    !viewerLocked &&
+    (pdfInkMode ||
+      marqueeMode ||
+      textSelectMode ||
+      (linking.active && linking.step === 'pdf'));
   const [draft, setDraft] = useState<Rect | null>(null);
   const draftRef = useRef<Rect | null>(null);
   const [popover, setPopover] = useState<{
@@ -244,26 +251,24 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
     setPdfError(null);
   }, [docUri, setOcrScanPaused, setOcrScanning]);
 
-  // Auto-OCR once per page (optional). Runs on the visible page even while a
-  // background full-doc scan is using a separate offscreen capture.
+  // Always annotate in page mode — continuous scroll has no overlay support.
   useEffect(() => {
-    if (!docUri || !autoOcr) return;
-    if (ocr.layouts[currentPage] != null || ocr.processingPage === currentPage) return;
-    if (ocrTried.current.has(currentPage)) return;
-    const page = currentPage;
-    const t = setTimeout(async () => {
-      ocrTried.current.add(page);
-      setOcrProcessingPage(page);
-      try {
-        const data = await recognizePage(pdfCaptureRef, aspect);
-        setOcrPageData(page, data);
-      } catch {
-        setOcrPageFailed(page);
-      }
-    }, 1200);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docUri, currentPage, autoOcr]);
+    if (docUri) setReadingMode('page');
+  }, [docUri, setReadingMode]);
+
+  // Do NOT auto-OCR or auto-import text layers on open — that loads the full
+  // PDF into JS / spins view-shot and jetsams older iPads a few seconds after
+  // the document appears. OCR runs on demand (Select / Scan / Retry).
+  useEffect(() => {
+    // Keep tried-set in sync when switching docs so on-demand OCR can retry.
+    if (!docUri) ocrTried.current = new Set();
+  }, [docUri]);
+
+  // When any annotation tool is selected, leave continuous-scroll so overlays work.
+  useEffect(() => {
+    if (tool === 'navigate') return;
+    if (readingMode === 'scroll') setReadingMode('page');
+  }, [tool, readingMode, setReadingMode]);
 
   // Cancel background scan only when switching documents (not on initial mount).
   const prevDocUriRef = useRef(docUri);
@@ -287,8 +292,16 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
     }
     setImportingTextLayer(true);
     try {
-      const probe = await probePdfTextLayer(docUri, { samplePages: 3 });
+      const probe = await probePdfTextLayer(docUri, { samplePages: 2 });
       if (!probe.searchable) return false;
+      // Prefer probe sample pages — avoid a second full-file base64 decode when
+      // the document is large. Full import only for small/medium searchable PDFs.
+      const pageCount = probe.pageCount || Object.keys(probe.pages).length;
+      if (pageCount <= 12 && Object.keys(probe.pages).length >= pageCount) {
+        setOcrLayoutsBulk(probe.pages, 'text-layer');
+        Object.keys(probe.pages).forEach((k) => ocrTried.current.add(Number(k)));
+        return true;
+      }
       const imported = await importPdfTextLayer(docUri);
       setOcrLayoutsBulk(imported.pages, 'text-layer');
       Object.keys(imported.pages).forEach((k) => ocrTried.current.add(Number(k)));
@@ -334,13 +347,11 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
     setOcrScanPaused(false);
     useStore.getState().resetOcrFailedPages();
 
-    // Render lanes are the real speed lever on a large document — network
-    // recognition concurrency is sized to match so it never becomes the
-    // bottleneck once cloud OCR is in play.
-    const lanes = cloud ? 3 : 2;
-    const recognizeConcurrency = cloud ? 3 : 2;
-    const captureWidth = cloud ? 900 : 1200;
-    const settleMs = cloud ? 200 : 300;
+    // One render lane only — multiple offscreen Pdf views crash large documents.
+    const lanes = 1;
+    const recognizeConcurrency = cloud ? 2 : 1;
+    const captureWidth = cloud ? 900 : 1100;
+    const settleMs = cloud ? 250 : 350;
     const MAX_ATTEMPTS = 3;
 
     setOcrScanning(true, { done: 0, total, current: null, engine: cloud ? 'cloud' : 'device' });
@@ -475,29 +486,9 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
     void scanDocument({ silent: false });
   };
 
-  // Auto-OCR when a document finishes loading — gated by Settings / reader toggle.
-  useEffect(() => {
-    if (!docUri || !numPages || passwordPrompt || pdfError) return;
-    if (!autoOcr) return;
-    if (scanRunningRef.current || ocr.scanning || importingTextLayer) return;
-    if (autoStartedForUriRef.current === docUri) return;
-
-    const state = useStore.getState();
-    const layouts = state.ocr.layouts;
-    const alreadyDone = Object.keys(layouts).filter((k) => layouts[Number(k)] != null).length;
-    if (alreadyDone >= numPages) {
-      autoStartedForUriRef.current = docUri;
-      return;
-    }
-
-    autoStartedForUriRef.current = docUri;
-    const t = setTimeout(() => {
-      void scanDocument({ silent: true });
-    }, 600);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docUri, numPages, passwordPrompt, pdfError, preferCloudOcr, autoOcr]);
-
+  // Never auto-scan or auto-import text layers after open. Older iPads jetsam
+  // when pdf-lib + react-native-pdf + Skia compete for memory a few seconds in.
+  // Users trigger Scan / text import explicitly from reader options.
   const disableAutoOcr = () => {
     setAutoOcr(false);
     if (ocr.scanning) {
@@ -509,12 +500,6 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
 
   const enableAutoOcr = () => {
     setAutoOcr(true);
-    // Allow the auto-start effect (or an immediate scan) to run again.
-    autoStartedForUriRef.current = null;
-    if (docUri && numPages && !scanRunningRef.current) {
-      autoStartedForUriRef.current = docUri;
-      void scanDocument({ silent: true });
-    }
   };
 
   const retryPageOcr = async () => {
@@ -563,12 +548,6 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
     return { w: fw, h: fh, left: (cw - fw) / 2, top: (ch - fh) / 2 };
   }, [container, effectiveAspect, pdfZoom]);
 
-  const markedPages = useMemo(() => {
-    const set = new Set<number>();
-    highlights.forEach((h) => set.add(h.page));
-    return set;
-  }, [highlights]);
-
   const pageTranslation = translations[currentPage];
   const showEnglishPane =
     translationView !== 'original' && !!pageTranslation?.english?.trim();
@@ -589,10 +568,8 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
   const ensureCurrentPageOcr = async (): Promise<OcrPageData | null> => {
     const existing = useStore.getState().ocr.layouts[currentPage];
     if (existing?.blocks.length) return existing;
-    // Skip a slow raster pass when Auto OCR is off — Text tool falls back to marquee.
-    if (!useStore.getState().autoOcr && useStore.getState().ocr.source !== 'text-layer') {
-      return null;
-    }
+    // Always allow on-demand OCR when the user is selecting / scanning —
+    // autoOcr only controls background work, not manual reads.
     setOcrProcessingPage(currentPage);
     try {
       const data = await recognizePage(pdfCaptureRef, aspect);
@@ -601,8 +578,86 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
     } catch {
       setOcrPageFailed(currentPage);
       return null;
+    } finally {
+      setOcrProcessingPage(null);
     }
   };
+
+  const scanCurrentPage = async () => {
+    if (!docUri) return;
+    if (readingMode !== 'page') setReadingMode('page');
+    // Wait a tick so page mode / capture view is mounted.
+    await new Promise((r) => setTimeout(r, 350));
+    setSelecting(true);
+    setOcrProcessingPage(currentPage);
+    try {
+      // Prefer embedded text when present (cheap); else raster OCR this page.
+      const imported = await tryImportTextLayer();
+      if (imported && useStore.getState().ocr.layouts[currentPage]?.blocks?.length) {
+        Alert.alert(
+          'Page ready',
+          'Selectable text is available. Tap Highlight, then long-press a word and drag to select.',
+        );
+        return;
+      }
+      const data = await recognizePage(pdfCaptureRef, aspect);
+      setOcrPageData(currentPage, data);
+      if (data.blocks.length || data.text.trim()) {
+        Alert.alert(
+          'Page scanned',
+          'Tap Highlight, then long-press a word and drag to select. Use Highlight only to mark the PDF without sending to Map.',
+        );
+      } else {
+        Alert.alert(
+          'No text found',
+          'This page may be blank or too low-quality. Try More → Box to mark a region, or Scan whole document from ⋯.',
+        );
+      }
+    } catch (e: any) {
+      setOcrPageFailed(currentPage);
+      Alert.alert('Scan failed', e?.message || 'Could not read this page.');
+    } finally {
+      setSelecting(false);
+      setOcrProcessingPage(null);
+    }
+  };
+
+  // Toolbar Scan button bumps scanSerial — run the same page OCR path.
+  const scanSerial = useAnnotation((s) => s.scanSerial);
+  const scanSerialSeen = useRef(0);
+  useEffect(() => {
+    if (!scanSerial || scanSerial === scanSerialSeen.current) return;
+    scanSerialSeen.current = scanSerial;
+    void scanCurrentPage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanSerial]);
+
+  // Quietly prep selectable text for the current page (no Scan button required).
+  useEffect(() => {
+    if (!textSelectMode || !docUri || !frame) return;
+    const existing = useStore.getState().ocr.layouts[currentPage];
+    if (existing?.blocks?.length) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        await tryImportTextLayer();
+        if (cancelled) return;
+        const afterImport = useStore.getState().ocr.layouts[currentPage];
+        if (afterImport?.blocks?.length) return;
+        // One-page OCR so selection works without an explicit Scan.
+        setSelecting(true);
+        await ensureCurrentPageOcr();
+      } catch {
+        /* ignore */
+      } finally {
+        if (!cancelled) setSelecting(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [textSelectMode, currentPage, docUri, frame?.w, frame?.h]);
 
   useEffect(() => {
     if (flashTarget) {
@@ -656,8 +711,11 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => highlightMode || linking.active,
-        onMoveShouldSetPanResponder: () => highlightMode,
+        onStartShouldSetPanResponder: () => marqueeMode || linking.active,
+        onMoveShouldSetPanResponder: () => marqueeMode,
+        onStartShouldSetPanResponderCapture: () => marqueeMode || (linking.active && linking.step === 'pdf'),
+        onMoveShouldSetPanResponderCapture: () => marqueeMode,
+        onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (evt) => {
           if (!frame) return;
           const x = evt.nativeEvent.locationX;
@@ -682,7 +740,7 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
           setDraft(next);
         },
         onPanResponderMove: (evt) => {
-          if (!startRef.current || !highlightMode) return;
+          if (!startRef.current || !marqueeMode) return;
           const x = evt.nativeEvent.locationX;
           const y = evt.nativeEvent.locationY;
           const sx = startRef.current.x;
@@ -698,7 +756,7 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
         },
         onPanResponderRelease: () => {
           const box = draftRef.current;
-          if (!highlightMode || !frame || !box) {
+          if (!marqueeMode || !frame || !box) {
             startRef.current = null;
             draftRef.current = null;
             setDraft(null);
@@ -714,12 +772,19 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
             const pageData = useStore.getState().ocr.layouts[currentPage];
             const hit = selectionFromMarquee(pageData, norm);
             const text = hit?.text?.trim() || textInside(pageData, norm) || '';
-            setPopover({
+            // Box = region annotation on the PDF only (§4.4). Canvas is → Map / + Map.
+            const mark = useAnnotation.getState().markStyle;
+            addHighlight({
+              page: currentPage,
               rect: hit?.rect || norm,
               rects: hit?.rects?.length ? hit.rects : [norm],
-              page: currentPage,
-              text,
+              text: text || `Box on p. ${currentPage}`,
+              category: 'key_fact',
+              note: '',
+              markStyle: mark || 'highlight',
+              docId: useStore.getState().activeDocId || undefined,
             });
+            setTool('navigate');
           }
           draftRef.current = null;
           setDraft(null);
@@ -727,20 +792,28 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
         },
       }),
     // draft is read via draftRef so it must NOT be a dependency (stale closure bug).
-    [highlightMode, linking, frame, highlights, currentPage, completeLink],
+    [marqueeMode, linking, frame, highlights, currentPage, completeLink, addHighlight, setTool],
   );
 
   const pdfInkPan = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: (evt) => {
-          if (!pdfInkMode) return false;
-          return shouldAcceptDraw(evt, fingerDraw);
+        // Capture so the native PDF pager does not steal pen strokes.
+        // Draw tool on the PDF always accepts finger+stylus (Pan toggle is for canvas).
+        onStartShouldSetPanResponderCapture: () => {
+          if (!pdfInkMode || linking.active || viewerLocked) return false;
+          return true;
         },
-        onMoveShouldSetPanResponder: (evt) => pdfInkMode && shouldAcceptDraw(evt, fingerDraw),
+        onMoveShouldSetPanResponderCapture: () => {
+          if (!pdfInkMode || linking.active || viewerLocked) return false;
+          return true;
+        },
+        onStartShouldSetPanResponder: () => !!pdfInkMode && !linking.active && !viewerLocked,
+        onMoveShouldSetPanResponder: () => !!pdfInkMode && !linking.active && !viewerLocked,
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (evt) => {
           if (!frame) return;
+          // Only Pencil double-tap cycles tools — never finger.
           if (pencilDoubleTap.current(evt)) return;
           const { locationX, locationY } = evt.nativeEvent;
           const force = readForce(evt);
@@ -786,14 +859,29 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
           );
         },
         onPanResponderRelease: () => {
-          if (pdfStrokeRef.current && pdfStrokeRef.current.points.length > 1) {
+          if (pdfStrokeRef.current && pdfStrokeRef.current.points.length >= 1) {
+            // Duplicate a single point so a tap still leaves a visible dot.
+            if (pdfStrokeRef.current.points.length === 1) {
+              const p0 = pdfStrokeRef.current.points[0];
+              pdfStrokeRef.current.points.push({ x: p0.x + 0.001, y: p0.y });
+            }
             addStroke(pdfStrokeRef.current);
           }
           pdfStrokeRef.current = null;
           setLivePdfPoints('');
         },
       }),
-    [pdfInkMode, fingerDraw, frame, tool, inkColor, currentPage, addStroke, eraseAtPdf],
+    [
+      pdfInkMode,
+      frame,
+      tool,
+      inkColor,
+      currentPage,
+      addStroke,
+      eraseAtPdf,
+      linking.active,
+      viewerLocked,
+    ],
   );
 
   const pagePdfStrokes = ink.strokes.filter((st) => st.pdfPage === currentPage);
@@ -801,7 +889,7 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
 
   const onHighlightSubmit = (v: PopoverSubmit) => {
     if (!popover) return;
-    createLinkedExcerpt({
+    const payload = {
       page: popover.page,
       rect: popover.rect,
       rects: popover.rects,
@@ -813,7 +901,23 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
       markStyle: v.markStyle,
       docName,
       docId: useStore.getState().activeDocId || undefined,
-    });
+    };
+    if (v.sendToCanvas) {
+      createLinkedExcerpt(payload);
+    } else {
+      addHighlight({
+        page: payload.page,
+        rect: payload.rect,
+        rects: payload.rects,
+        text: payload.text,
+        originalText: payload.originalText,
+        category: payload.category,
+        note: payload.note,
+        tags: payload.tags,
+        markStyle: payload.markStyle,
+        docId: payload.docId,
+      });
+    }
     setPopover(null);
     setTool('navigate');
   };
@@ -832,6 +936,18 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
       onPress?: () => void;
     }> = [
       { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Scan this page',
+        onPress: () => void scanCurrentPage(),
+      },
+      {
+        text: ocr.scanning ? 'Scan already running…' : 'Scan whole document',
+        onPress: () => {
+          if (ocr.scanning) return;
+          if (readingMode !== 'page') setReadingMode('page');
+          void scanDocument({ silent: false });
+        },
+      },
       {
         text: readingMode === 'scroll' ? 'Switch to page mode' : 'Continuous scroll',
         onPress: () => setReadingMode(readingMode === 'scroll' ? 'page' : 'scroll'),
@@ -1039,7 +1155,7 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
                     lane independently seeks pages so several render in parallel. */}
                 {ocr.scanning && (
                   <View pointerEvents="none" style={[StyleSheet.absoluteFill, { zIndex: 0 }]}>
-                    {Array.from({ length: ocr.scanProgress?.engine === 'cloud' ? 3 : 2 }).map((_, lane) => (
+                    {Array.from({ length: 1 }).map((_, lane) => (
                       <View
                         key={`lane-${lane}`}
                         ref={laneRefs[lane]}
@@ -1084,6 +1200,7 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
                     },
                   ]}>
                   <View
+                    pointerEvents={blockPdfTouches ? 'none' : 'auto'}
                     style={{
                       width: pageRotation === 90 || pageRotation === 270 ? frame.h : frame.w,
                       height: pageRotation === 90 || pageRotation === 270 ? frame.w : frame.h,
@@ -1099,7 +1216,7 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
                       minScale={1}
                       maxScale={1}
                       spacing={0}
-                      enablePaging
+                      enablePaging={false}
                       password={pdfPassword || undefined}
                       style={s.pdf}
                       onLoadComplete={(pages, _fp, dims) => {
@@ -1258,28 +1375,44 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
                   </View>
                 )}
 
-                {/* Native text selection — long-press word, drag to extend */}
-                {frame && textSelectMode && pageRotation === 0 && (
-                  <TextSelectOverlay
-                    key={`sel-${currentPage}-${popover ? 'sheet' : 'live'}`}
-                    enabled={textSelectMode && !popover}
-                    frame={frame}
-                    pageData={ocr.layouts[currentPage]}
-                    ensuringOcr={selecting}
-                    onEnsureOcr={ensureCurrentPageOcr}
-                    onBusyChange={setSelecting}
-                    onConfirm={(sel) => openSelection(sel.rect, sel.text, sel.rects)}
-                    tint={p.tint}
-                    tintSoft={p.tintSoft}
-                    textColor={p.text}
-                    mutedColor={p.textMid}
-                    surface={p.grouped}
-                  />
-                )}
+                {/* Direct text selection — press, drag, lift = highlight on PDF */}
+                {textSelectMode && frame ? (
+                  <View style={[StyleSheet.absoluteFill, { zIndex: 30 }]}>
+                    <TextSelectOverlay
+                      enabled
+                      frame={{ w: frame.w, h: frame.h }}
+                      pageData={ocr.layouts[currentPage]}
+                      ensuringOcr={selecting || ocr.processingPage === currentPage}
+                      onEnsureOcr={ensureCurrentPageOcr}
+                      onConfirm={(sel) => {
+                        const mark =
+                          tool === 'underline'
+                            ? 'underline'
+                            : tool === 'strikethrough'
+                              ? 'strikethrough'
+                              : useAnnotation.getState().markStyle || 'highlight';
+                        addHighlight({
+                          page: currentPage,
+                          rect: sel.rect,
+                          rects: sel.rects,
+                          text: sel.text.trim() || `Highlight on p. ${currentPage}`,
+                          category: 'key_fact',
+                          note: '',
+                          markStyle: mark,
+                          docId: useStore.getState().activeDocId || undefined,
+                        });
+                      }}
+                      onBusyChange={setSelecting}
+                      mutedColor={p.textMuted}
+                    />
+                  </View>
+                ) : null}
 
-                {/* box / link capture overlay (optional Lasso still available) */}
-                {(highlightMode || (linking.active && linking.step === 'pdf')) && (
-                  <View style={StyleSheet.absoluteFill} {...panResponder.panHandlers}>
+                {/* Drag-box overlay (Box tool + link-to-PDF) */}
+                {(marqueeMode || (linking.active && linking.step === 'pdf')) && (
+                  <View
+                    style={[StyleSheet.absoluteFill, { zIndex: 30 }]}
+                    {...panResponder.panHandlers}>
                     {draft && (
                       <View
                         style={{
@@ -1294,11 +1427,24 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
                         }}
                       />
                     )}
+                    {marqueeMode && !draft ? (
+                      <View style={s.annotateHint} pointerEvents="none">
+                        <Text style={s.annotateHintText}>Drag a box over the passage</Text>
+                      </View>
+                    ) : null}
                   </View>
                 )}
 
                 {pdfInkMode && !linking.active && !viewerLocked && (
-                  <View style={[StyleSheet.absoluteFill, { zIndex: 20 }]} {...pdfInkPan.panHandlers} />
+                  <View style={[StyleSheet.absoluteFill, { zIndex: 40 }]} {...pdfInkPan.panHandlers}>
+                    {!livePdfPoints ? (
+                      <View style={s.annotateHint} pointerEvents="none">
+                        <Text style={s.annotateHintText}>
+                          {tool === 'eraser' ? 'Scrub over ink to erase' : 'Draw on the PDF page'}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
                 )}
 
                 {showEnglishPane && (
@@ -1326,9 +1472,8 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
               </View>
               <Text style={s.emptyHeading}>No Document</Text>
               <Text style={s.emptyText}>
-                Add a judgment PDF from the sidebar, or open one here. Use Text or Box on the
-                toolbar to select a passage, then Highlight to send it to the canvas. Pen draws with
-                Finger mode on by default.
+                Open a PDF, then press a word and drag to highlight. Draw for ink. → Map only when you
+                want a canvas card.
               </Text>
               <TouchableOpacity style={s.emptyBtn} onPress={openDoc} activeOpacity={0.85}>
                 <FolderOpen size={16} color="#fff" strokeWidth={2.2} />
@@ -1406,23 +1551,17 @@ export default function PdfReader({ embedded = false }: { embedded?: boolean }) 
             <TouchableOpacity style={s.quietBtn} onPress={() => rotatePage(90)} accessibilityLabel="Rotate">
               <RotateCw size={15} color={p.textMid} strokeWidth={2.1} />
             </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.quietBtn, s.scanDockBtn]}
+              onPress={() => void scanCurrentPage()}
+              accessibilityLabel="Scan this page">
+              <ScanText size={15} color={p.tint} strokeWidth={2.1} />
+              <Text style={[s.quietBtnText, { color: p.tint }]}>Scan</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={s.quietBtn} onPress={openReaderMore} accessibilityLabel="Reader options">
               <MoreHorizontal size={18} color={p.textMid} strokeWidth={2.1} />
             </TouchableOpacity>
           </View>
-          {numPages > 1 ? (
-            <PdfThumbStrip
-              docUri={docUri}
-              numPages={numPages}
-              currentPage={currentPage}
-              password={pdfPassword}
-              markedPages={markedPages}
-              onSelectPage={(pg) => {
-                setCurrentPage(pg);
-                if (readingMode === 'scroll') setReadingMode('page');
-              }}
-            />
-          ) : null}
         </View>
       )}
 
@@ -1614,6 +1753,24 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       shadowOffset: { width: 0, height: 6 },
       elevation: 4,
     },
+    annotateHint: {
+      position: 'absolute',
+      top: 10,
+      left: 12,
+      right: 12,
+      alignItems: 'center',
+    },
+    annotateHintText: {
+      backgroundColor: 'rgba(0,0,0,0.62)',
+      color: '#fff',
+      fontSize: 12,
+      fontWeight: '600',
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      borderRadius: 999,
+      overflow: 'hidden',
+      textAlign: 'center',
+    },
     pdf: { flex: 1, backgroundColor: p.pdfPage },
     selectingOverlay: {
       ...StyleSheet.absoluteFillObject,
@@ -1724,6 +1881,12 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       alignItems: 'center',
       justifyContent: 'center',
       borderRadius: 8,
+    },
+    scanDockBtn: {
+      flexDirection: 'row',
+      gap: 4,
+      paddingHorizontal: 8,
+      minWidth: 56,
     },
     quietBtnText: { fontSize: 13, fontWeight: '600', color: p.textMid, fontVariant: ['tabular-nums'] },
     modeOn: { backgroundColor: p.tintSoft },

@@ -9,7 +9,14 @@ import {
   Image,
 } from 'react-native';
 import DocumentPicker from 'react-native-document-picker';
-import { Plus, FileText, ChevronDown, ChevronRight } from 'lucide-react-native';
+import {
+  Plus,
+  FileText,
+  ChevronDown,
+  ChevronRight,
+  PanelLeftClose,
+  PanelLeftOpen,
+} from 'lucide-react-native';
 import { useStore } from '../store';
 import {
   getPalette,
@@ -25,8 +32,19 @@ import { importWordAsPdf } from '../services/pdfUtilities';
 
 const LOGO = require('../assets/notelawbs-logo.png');
 const QUICK_TAGS = ['judgment', 'statute', 'brief', 'evidence', 'research'];
+export const DOC_SIDEBAR_COLLAPSED_W = 40;
 
-export default function DocSidebar({ compact = false }: { compact?: boolean }) {
+type Props = {
+  compact?: boolean;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+};
+
+export default function DocSidebar({
+  compact = false,
+  collapsed = false,
+  onToggleCollapse,
+}: Props) {
   const p = useTheme();
   const library = useStore((s) => s.library);
   const activeDocId = useStore((s) => s.activeDocId);
@@ -110,10 +128,37 @@ export default function DocSidebar({ compact = false }: { compact?: boolean }) {
     );
   };
 
+  if (collapsed) {
+    return (
+      <View style={s.collapsedRail}>
+        <Pressable
+          style={({ pressed }) => [s.expandBtn, pressed && { backgroundColor: p.hover }]}
+          onPress={onToggleCollapse}
+          accessibilityLabel="Expand documents sidebar">
+          <PanelLeftOpen size={ICON_SIZE} color={p.textMid} strokeWidth={1.5} />
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [s.expandBtn, pressed && { backgroundColor: p.hover }]}
+          onPress={openAddMenu}
+          accessibilityLabel="Add document">
+          <Plus size={ICON_SIZE} color={p.textMuted} strokeWidth={1.5} />
+        </Pressable>
+      </View>
+    );
+  }
+
   if (compact) {
     return (
       <View style={s.root}>
         <Image source={LOGO} style={s.compactLogo} resizeMode="contain" accessibilityLabel="NoteLawbs.Ai" />
+        {onToggleCollapse ? (
+          <Pressable
+            style={({ pressed }) => [s.compactRow, pressed && { backgroundColor: p.hover }]}
+            onPress={onToggleCollapse}
+            accessibilityLabel="Collapse documents sidebar">
+            <PanelLeftClose size={ICON_SIZE} color={p.textMuted} strokeWidth={1.5} />
+          </Pressable>
+        ) : null}
         <ScrollView style={s.list} contentContainerStyle={s.compactList} showsVerticalScrollIndicator={false}>
           {visible.map((doc) => {
             const active = doc.id === activeDocId;
@@ -144,14 +189,25 @@ export default function DocSidebar({ compact = false }: { compact?: boolean }) {
 
   return (
     <View style={s.root}>
-      <Pressable
-        style={({ pressed }) => [s.workspace, pressed && { backgroundColor: p.hover }]}
-        onPress={() => {}}>
-        <Image source={LOGO} style={s.logo} resizeMode="contain" />
-        <Text style={s.workspaceLabel} numberOfLines={1}>
-          {projectTitle || 'NoteLawbs.Ai'}
-        </Text>
-      </Pressable>
+      <View style={s.workspaceRow}>
+        <Pressable
+          style={({ pressed }) => [s.workspace, pressed && { backgroundColor: p.hover }]}
+          onPress={() => {}}>
+          <Image source={LOGO} style={s.logo} resizeMode="contain" />
+          <Text style={s.workspaceLabel} numberOfLines={1}>
+            {projectTitle || 'NoteLawbs.Ai'}
+          </Text>
+        </Pressable>
+        {onToggleCollapse ? (
+          <Pressable
+            hitSlop={8}
+            onPress={onToggleCollapse}
+            style={({ pressed }) => [s.collapseBtn, pressed && { backgroundColor: p.hover }]}
+            accessibilityLabel="Collapse documents sidebar">
+            <PanelLeftClose size={16} color={p.textMuted} strokeWidth={1.5} />
+          </Pressable>
+        ) : null}
+      </View>
 
       <ScrollView
         style={s.list}
@@ -243,16 +299,45 @@ const styles = (p: ReturnType<typeof getPalette>, compact: boolean) =>
       paddingTop: 6,
       alignItems: compact ? 'center' : undefined,
     },
+    collapsedRail: {
+      width: DOC_SIDEBAR_COLLAPSED_W,
+      backgroundColor: p.sidebar,
+      borderRightWidth: StyleSheet.hairlineWidth,
+      borderRightColor: p.separator,
+      paddingTop: 10,
+      alignItems: 'center',
+      gap: 4,
+    },
+    expandBtn: {
+      width: 32,
+      height: 32,
+      borderRadius: RADIUS.md,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    workspaceRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginHorizontal: 4,
+      marginBottom: 8,
+    },
     workspace: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 8,
-      marginHorizontal: 8,
-      marginBottom: 8,
+      flex: 1,
       paddingHorizontal: 8,
       paddingVertical: 6,
       borderRadius: RADIUS.md,
       minHeight: ROW_H + 4,
+    },
+    collapseBtn: {
+      width: 28,
+      height: 28,
+      borderRadius: RADIUS.sm,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: 4,
     },
     logo: { width: 22, height: 22 },
     compactLogo: { width: 28, height: 28, marginBottom: 8, marginTop: 4 },

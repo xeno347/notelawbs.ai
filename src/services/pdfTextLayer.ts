@@ -36,8 +36,19 @@ function base64ToBytes(b64: string): Uint8Array {
   return bytes;
 }
 
+/** Full base64 decode of huge PDFs crashes the app — skip text-layer import above this. */
+const TEXT_LAYER_MAX_BYTES = 6 * 1024 * 1024;
+
 async function readPdfBytes(docUri: string): Promise<Uint8Array> {
   const path = docUri.replace(/^file:\/\//, '');
+  try {
+    const stat = await ReactNativeBlobUtil.fs.stat(path);
+    if ((Number(stat.size) || 0) > TEXT_LAYER_MAX_BYTES) {
+      throw new Error('PDF too large for text-layer import');
+    }
+  } catch (e: any) {
+    if (String(e?.message || e).includes('too large')) throw e;
+  }
   const b64 = await ReactNativeBlobUtil.fs.readFile(path, 'base64');
   return base64ToBytes(b64);
 }

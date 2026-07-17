@@ -41,11 +41,12 @@ import CollabCursors from './CollabCursors';
 /**
  * Logical board size in points. Skia allocates BOARD × PixelRatio GPU textures;
  * Metal rejects anything above 8192 — 6000@2x (=12000) was crashing every paint.
+ * Keep well under the limit so PDFium + Skia can coexist on 2–3GB iPads.
  */
 const MAX_METAL_TEX = 8192;
 const BOARD = Math.min(
-  6000,
-  Math.floor(MAX_METAL_TEX / Math.max(PixelRatio.get(), 1)) - 16,
+  2400,
+  Math.floor(MAX_METAL_TEX / Math.max(PixelRatio.get(), 1)) - 64,
 );
 
 function nodeWidth(type?: string) {

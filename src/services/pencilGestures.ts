@@ -5,12 +5,17 @@ export type PointerKind = 'stylus' | 'finger' | 'unknown';
 export function pointerKind(evt: any): PointerKind {
   const ne = evt?.nativeEvent || evt || {};
   const t0 = ne.touches?.[0] || ne.changedTouches?.[0] || ne;
-  // iOS exposes touchType on UITouch (RN may pass it through)
+  // iOS exposes touchType on UITouch (RN may pass it through).
+  // IMPORTANT: do NOT use `force` to detect Pencil — on many iPads a finger
+  // reports force=1.0 whenever it is down, which falsely marks every touch as
+  // stylus and then Pencil double-tap heuristics cancel real draw strokes.
   const type = (t0?.touchType || ne.touchType || '').toString().toLowerCase();
   if (type.includes('stylus') || type.includes('pencil')) return 'stylus';
-  if (typeof t0?.force === 'number' && t0.force > 0) return 'stylus';
-  if (typeof ne.force === 'number' && ne.force > 0) return 'stylus';
   if (type.includes('direct') || type.includes('finger')) return 'finger';
+  const altitude = t0?.altitudeAngle ?? ne.altitudeAngle;
+  if (typeof altitude === 'number' && altitude > 0 && altitude < Math.PI / 2) {
+    return 'stylus';
+  }
   return 'unknown';
 }
 

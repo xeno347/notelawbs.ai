@@ -26,6 +26,8 @@ type AnnotationState = {
   inkColor: number;
   fingerDraw: boolean;
   fitSerial: number;
+  /** Bumped to ask PdfReader to OCR the current page. */
+  scanSerial: number;
   /** Drag offset for floating annotation bar (pixels from default bottom-center). */
   barOffset: { x: number; y: number };
   /** Collapsed to a compact “Tools” pill. */
@@ -41,6 +43,7 @@ type AnnotationState = {
   setBarCollapsed: (v: boolean) => void;
   toggleBarCollapsed: () => void;
   requestFit: () => void;
+  requestScanPage: () => void;
   setMarkStyle: (m: MarkStyle) => void;
   cyclePencilTool: () => void;
 };
@@ -52,16 +55,27 @@ function markStyleForTool(tool: ToolMode, prev: MarkStyle): MarkStyle {
   return prev;
 }
 
+function toolIsInk(tool: ToolMode): boolean {
+  return tool === 'pen' || tool === 'highlighter' || tool === 'eraser';
+}
+
 export const useAnnotation = create<AnnotationState>((set) => ({
   tool: 'navigate',
   inkColor: 0,
   /** Default on so Pen/Mark/Erase work with finger (simulator / no Pencil). */
   fingerDraw: true,
   fitSerial: 0,
+  scanSerial: 0,
   barOffset: { x: 0, y: 0 },
   barCollapsed: false,
   markStyle: 'highlight',
-  setTool: (tool) => set((s) => ({ tool, markStyle: markStyleForTool(tool, s.markStyle) })),
+  setTool: (tool) =>
+    set((s) => ({
+      tool,
+      markStyle: markStyleForTool(tool, s.markStyle),
+      // Ink tools need finger drawing on so they work without Apple Pencil.
+      fingerDraw: toolIsInk(tool) ? true : s.fingerDraw,
+    })),
   setInkColor: (inkColor) => set({ inkColor }),
   toggleFingerDraw: () => set((s) => ({ fingerDraw: !s.fingerDraw })),
   setFingerDraw: (fingerDraw) => set({ fingerDraw }),
@@ -70,6 +84,7 @@ export const useAnnotation = create<AnnotationState>((set) => ({
   setBarCollapsed: (barCollapsed) => set({ barCollapsed }),
   toggleBarCollapsed: () => set((s) => ({ barCollapsed: !s.barCollapsed })),
   requestFit: () => set((s) => ({ fitSerial: s.fitSerial + 1 })),
+  requestScanPage: () => set((s) => ({ scanSerial: s.scanSerial + 1 })),
   setMarkStyle: (markStyle) => set({ markStyle }),
   cyclePencilTool: () =>
     set((s) => ({
@@ -84,7 +99,7 @@ export const useAnnotation = create<AnnotationState>((set) => ({
 
 /** True when user is in an ink/draw mode (canvas or PDF). */
 export function isInkTool(tool: ToolMode): boolean {
-  return tool === 'pen' || tool === 'highlighter' || tool === 'eraser';
+  return toolIsInk(tool);
 }
 
 export function isMarkTool(tool: ToolMode): boolean {

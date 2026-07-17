@@ -94,7 +94,7 @@ export function selectionFromRange(
   const slice = words.slice(a, b + 1);
   if (!slice.length) return null;
 
-  // Build per-line highlight rects (feels like OS text selection, not one fat box).
+  // Build per-line highlight rects (OS text selection — tight to glyphs, not one fat box).
   const byLine = new Map<number, WordToken[]>();
   slice.forEach((word) => {
     const list = byLine.get(word.lineIndex) || [];
@@ -104,9 +104,8 @@ export function selectionFromRange(
   const rects = [...byLine.entries()]
     .sort(([a], [b]) => a - b)
     .map(([, lineWords]) => {
-      const union = unionRects(lineWords.map((word) => word.rect));
-      // Slight vertical pad so fills read like iOS Notes highlighter ink.
-      return padRect(union, 0.0012);
+      // Keep height/width snapped to the words — no inflated “draw box” padding.
+      return unionRects(lineWords.map((word) => word.rect));
     });
 
   return {

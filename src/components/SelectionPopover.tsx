@@ -28,6 +28,8 @@ export type PopoverSubmit = {
   note: string;
   tags: string[];
   markStyle: MarkStyle;
+  /** When false, only mark the PDF — do not create a Map card. */
+  sendToCanvas: boolean;
 };
 
 const MARK_STYLES: Array<{ key: MarkStyle; label: string }> = [
@@ -77,7 +79,7 @@ export default function SelectionPopover({
     }
   }, [visible, initialText, defaultMark]);
 
-  const submit = () => {
+  const submit = (sendToCanvas: boolean) => {
     const tags = tagsRaw
       .split(/[,#]/)
       .map((t) => t.trim())
@@ -89,6 +91,7 @@ export default function SelectionPopover({
       note: note.trim(),
       tags,
       markStyle,
+      sendToCanvas,
     });
     setText('');
     setOriginalText(undefined);
@@ -127,9 +130,9 @@ export default function SelectionPopover({
           <View style={s.handle} />
           <View style={s.header}>
             <View>
-              <Text style={s.title}>Send to canvas</Text>
+              <Text style={s.title}>Annotate</Text>
               <Text style={s.subtitle}>
-                Page {page} · {catStyle(category).label} · {markStyle}
+                Page {page} · {catStyle(category).label} · {markStyle} · PDF only unless + Map
               </Text>
             </View>
             <TouchableOpacity onPress={onCancel} hitSlop={10} style={s.closeBtn}>
@@ -222,8 +225,11 @@ export default function SelectionPopover({
             <TouchableOpacity style={s.cancelBtn} onPress={onCancel}>
               <Text style={s.cancelText}>Cancel</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={s.submitBtn} onPress={submit}>
-              <Text style={s.submitText}>Highlight + canvas</Text>
+            <TouchableOpacity style={s.mapBtn} onPress={() => submit(true)}>
+              <Text style={s.mapBtnText}>+ Map</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={s.submitBtn} onPress={() => submit(false)}>
+              <Text style={s.submitText}>Highlight only</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -328,6 +334,15 @@ const styles = (p: ReturnType<typeof getPalette>) =>
       backgroundColor: p.surface2,
     },
     cancelText: { color: p.text, fontWeight: '600', fontSize: 14 },
+    mapBtn: {
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      borderRadius: RADIUS.sm,
+      backgroundColor: p.surface2,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: p.tint,
+    },
+    mapBtnText: { color: p.tint, fontWeight: '700', fontSize: 14 },
     submitBtn: {
       flex: 1,
       paddingVertical: 12,
